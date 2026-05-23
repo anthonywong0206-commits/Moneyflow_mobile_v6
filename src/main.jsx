@@ -456,87 +456,223 @@ function CalendarPage({ transactions, setEditor, theme }) {
   </div>
 }
 
-function StatsPage({ transactions, theme }) {
-  const exportRefs = useRef({})
-  const s = summaries(transactions)
-  const colors = theme.chart
-  const catData = aggregate(transactions.filter(t=>t.type==='expense'), 'category')
-  const payData = aggregate(transactions, 'payment')
-  const daily = dailyData(transactions)
-  const saving = dailySaving(transactions)
 
-  const chartCard = (id, title, children) => <Glass theme={theme} className="relative" id={`chart-${id}`}>
-    <div className="mb-3 flex items-center justify-between">
-      <div><h3 className="font-black">{title}</h3><p className="text-xs text-slate-500">{new Date().toISOString().slice(0,7)}</p></div>
-      <div className="flex gap-1">
-        <button className="iconBtn small" onClick={()=>downloadElement(`chart-${id}`, `${title}.png`)}><Download size={16}/></button>
-        <button className="iconBtn small" onClick={()=>shareElement(`chart-${id}`, `${title}.png`)}><Share2 size={16}/></button>
+function StatsPage({ transactions, theme }) {
+  const [month, setMonth] = useState(new Date())
+  const ym = `${month.getFullYear()}-${String(month.getMonth()+1).padStart(2,'0')}`
+  const monthLabel = `${month.getFullYear()}年${month.getMonth()+1}月`
+  const monthTx = transactions.filter(t => t.date?.startsWith(ym))
+  const expenseTx = monthTx.filter(t => t.type === 'expense')
+  const totalExpense = expenseTx.reduce((a,b)=>a+Number(b.amount||0),0)
+  const catData = aggregate(expenseTx, 'category')
+  const daily = monthDailyExpenseData(expenseTx, month)
+  const dailyMax = dailyMaxSingleExpenseData(expenseTx, month)
+  const monthlyMax = expenseTx.length ? [...expenseTx].sort((a,b)=>Number(b.amount)-Number(a.amount))[0] : null
+  const colors = theme.chart
+  const move = (n) => setMonth(new Date(month.getFullYear(), month.getMonth()+n, 1))
+
+  const chartCard = (id, title, subtitle, children) => (
+    <Glass theme={theme} className="relative overflow-hidden" id={`chart-${id}`}>
+      <div className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-white/30 blur-2xl"></div>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h3 className="font-black">{title}</h3>
+          <p className="text-xs text-slate-500">{subtitle}</p>
+        </div>
+        <div className="flex shrink-0 gap-1">
+          <button className="iconBtn small" onClick={()=>downloadElement(`chart-${id}`, `MoneyFlow-${title}-${ym}.png`)} title="下載 PNG"><Download size={16}/></button>
+          <button className="iconBtn small" onClick={()=>shareElement(`chart-${id}`, `MoneyFlow-${title}-${ym}.png`)} title="分享"><Share2 size={16}/></button>
+        </div>
       </div>
-    </div>
-    {children}
-  </Glass>
+      {children}
+    </Glass>
+  )
 
   return <div className="space-y-4">
-    <Header title="Stats" subtitle="每張圖表都可以下載或分享。" />
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-      <StatCard theme={theme} label="支出" value={HKD.format(s.expense)} />
-      <StatCard theme={theme} label="收入" value={HKD.format(s.income)} />
-      <StatCard theme={theme} label="儲蓄" value={HKD.format(s.saving)} />
-      <StatCard theme={theme} label="儲蓄率" value={`${s.savingRate}%`} />
+    <div className="flex items-start justify-between gap-3 pt-2">
+      <div>
+        <h1 className="text-3xl font-black tracking-tight text-slate-950">Stats</h1>
+        <p className="text-sm text-slate-500">專業月度支出圖表 · 可一鍵生成 IG Story</p>
+      </div>
+      <button onClick={()=>downloadStoryStats('stats-story-card', `MoneyFlow-${ym}-IG-Story.png`)} className={`rounded-2xl bg-gradient-to-r ${theme.accent} px-3 py-2 text-xs font-black text-white shadow-glow`}>
+        生成IG圖
+      </button>
     </div>
 
-    {chartCard('pie', '類別開支比例',
-      <div className="h-72">
-        <ResponsiveContainer>
+    <div className={`rounded-[2rem] bg-gradient-to-br ${theme.accent} p-5 text-white shadow-glow`}>
+      <div className="flex items-center justify-between">
+        <button onClick={()=>move(-1)} className="rounded-full bg-white/15 p-2"><ChevronLeft size={20}/></button>
+        <div className="text-center">
+          <p className="text-sm opacity-80">{monthLabel}</p>
+          <p className="mt-1 text-xs opacity-70">每月累計支出</p>
+          <h2 className="mt-1 text-4xl font-black">{HKD.format(totalExpense)}</h2>
+        </div>
+        <button onClick={()=>move(1)} className="rounded-full bg-white/15 p-2"><ChevronRight size={20}/></button>
+      </div>
+    </div>
+
+    <div id="stats-story-card" className="story-export-card">
+      <div className={`story-bg bg-gradient-to-br ${theme.accent}`}>
+        <div className="story-header">
+          <div>
+            <div className="story-kicker">MoneyFlow Monthly Stats</div>
+            <h2>{monthLabel}</h2>
+          </div>
+          <div className="story-badge">IG Story</div>
+        </div>
+        <div className="story-total">
+          <span>每月累計支出</span>
+          <strong>{HKD.format(totalExpense)}</strong>
+        </div>
+        <div className="story-grid">
+          <div className="story-panel">
+            <span>最大單項消費</span>
+            <strong>{monthlyMax ? HKD.format(monthlyMax.amount) : HKD.format(0)}</strong>
+            <small>{monthlyMax ? `${monthlyMax.emoji || '💸'} ${monthlyMax.note || monthlyMax.category} · ${monthlyMax.date}` : '未有記錄'}</small>
+          </div>
+          <div className="story-panel">
+            <span>最高消費日</span>
+            <strong>{topDay(daily)?.date || '-'}</strong>
+            <small>{topDay(daily) ? HKD.format(topDay(daily).expense) : '未有記錄'}</small>
+          </div>
+        </div>
+        <div className="story-chart-box">
+          <div className="story-section-title">類別開支比例</div>
+          <div className="story-bars">
+            {catData.slice(0,5).map((d,i)=>(
+              <div className="story-bar-row" key={d.name}>
+                <span>{d.name}</span>
+                <div><i style={{width:`${Math.max(6, totalExpense ? d.value/totalExpense*100 : 0)}%`, background: colors[i%colors.length]}}></i></div>
+                <b>{Math.round(totalExpense ? d.value/totalExpense*100 : 0)}%</b>
+              </div>
+            ))}
+            {catData.length === 0 && <div className="story-empty">本月未有支出資料</div>}
+          </div>
+        </div>
+        <div className="story-footer">清楚記錄每一天的金錢流向</div>
+      </div>
+    </div>
+
+    {chartCard('category-pie', '類別開支比例', '按本月支出分類，標籤顯示類別、比例及金額。',
+      <div className="h-80">
+        {catData.length ? <ResponsiveContainer>
           <PieChart>
-            <Pie data={catData} dataKey="value" nameKey="name" outerRadius={82} labelLine label={({name, percent, value}) => `${name} ${(percent*100).toFixed(0)}% ${Math.round(value)}`}>
+            <Pie data={catData} dataKey="value" nameKey="name" outerRadius={88} labelLine label={({name, percent, value}) => `${name} ${(percent*100).toFixed(0)}% · ${HKD.format(value)}`}>
               {catData.map((_, i)=><Cell key={i} fill={colors[i % colors.length]} />)}
             </Pie>
             <Tooltip formatter={(v)=>HKD.format(v)} />
           </PieChart>
+        </ResponsiveContainer> : <Empty text="本月未有支出分類資料。" />}
+      </div>
+    )}
+
+    {chartCard('daily-line', '每日消費變化', '顯示本月每日累計支出走勢。',
+      <div className="h-72">
+        <ResponsiveContainer>
+          <LineChart data={daily}>
+            <CartesianGrid strokeDasharray="3 3"/>
+            <XAxis dataKey="day"/>
+            <YAxis/>
+            <Tooltip formatter={(v)=>HKD.format(v)} labelFormatter={(v)=>`${ym}-${String(v).padStart(2,'0')}`}/>
+            <Line type="monotone" dataKey="expense" name="每日支出" stroke={colors[0]} strokeWidth={3} dot={false}/>
+          </LineChart>
         </ResponsiveContainer>
       </div>
     )}
 
-    {chartCard('line', '每日消費變化',
-      <div className="h-64"><ResponsiveContainer><LineChart data={daily}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="date"/><YAxis/><Tooltip formatter={(v)=>HKD.format(v)}/><Line type="monotone" dataKey="expense" stroke={colors[0]} strokeWidth={3} dot={false}/></LineChart></ResponsiveContainer></div>
+    {chartCard('daily-max', '每日最大單項消費', '每日自動更新：找出每天最大的一筆支出。',
+      <div className="h-72">
+        <ResponsiveContainer>
+          <BarChart data={dailyMax}>
+            <CartesianGrid strokeDasharray="3 3"/>
+            <XAxis dataKey="day"/>
+            <YAxis/>
+            <Tooltip formatter={(v)=>HKD.format(v)} labelFormatter={(v)=>`${ym}-${String(v).padStart(2,'0')}`}/>
+            <Bar dataKey="max" name="最大單項" fill={colors[2]} radius={[12,12,0,0]}/>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
     )}
 
-    {chartCard('bar', '收入 / 支出 / 儲蓄',
-      <div className="h-64"><ResponsiveContainer><BarChart data={daily}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="date"/><YAxis/><Tooltip formatter={(v)=>HKD.format(v)}/><Bar dataKey="income" fill={colors[3]}/><Bar dataKey="expense" fill={colors[0]}/><Bar dataKey="saving" fill={colors[2]}/></BarChart></ResponsiveContainer></div>
-    )}
-
-    {chartCard('payment', '支付方式比例',
-      <div className="h-64"><ResponsiveContainer><PieChart><Pie data={payData} dataKey="value" nameKey="name" innerRadius={48} outerRadius={82} label={({name, percent}) => `${name} ${(percent*100).toFixed(0)}%`}>{payData.map((_,i)=><Cell key={i} fill={colors[i%colors.length]}/>)}</Pie><Tooltip formatter={(v)=>HKD.format(v)}/></PieChart></ResponsiveContainer></div>
-    )}
-
-    {chartCard('saving', 'Saving Trend',
-      <div className="h-64"><ResponsiveContainer><LineChart data={saving}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="date"/><YAxis/><Tooltip formatter={(v)=>HKD.format(v)}/><Line type="monotone" dataKey="saving" stroke={colors[2]} strokeWidth={3}/></LineChart></ResponsiveContainer></div>
+    {chartCard('monthly-max', '每月最大單項消費', '每月自動更新：顯示本月最大一筆交易及美化圖片卡。',
+      <div className="space-y-3">
+        <div className={`rounded-[2rem] bg-gradient-to-br ${theme.accent} p-5 text-white shadow-glow`}>
+          <div className="flex items-center gap-4">
+            <div className="grid h-16 w-16 place-items-center rounded-3xl bg-white/20 text-3xl">{monthlyMax?.emoji || '🏆'}</div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm opacity-75">本月最大單項消費</p>
+              <h3 className="mt-1 text-3xl font-black">{monthlyMax ? HKD.format(monthlyMax.amount) : HKD.format(0)}</h3>
+              <p className="mt-1 truncate text-sm opacity-80">{monthlyMax ? `${monthlyMax.note || monthlyMax.category} · ${monthlyMax.payment} · ${monthlyMax.date}` : '本月未有支出'}</p>
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {topExpenses(expenseTx, 3).map((t,i)=>(
+            <div key={t.id} className="rounded-3xl bg-white/75 p-3 text-center ring-1 ring-slate-200">
+              <div className="text-2xl">{i===0?'🥇':i===1?'🥈':'🥉'}</div>
+              <div className="mt-1 truncate text-xs font-bold">{t.note || t.category}</div>
+              <div className="text-sm font-black">{HKD.format(t.amount)}</div>
+            </div>
+          ))}
+          {expenseTx.length === 0 && <div className="col-span-3"><Empty text="本月未有單項消費資料。" /></div>}
+        </div>
+      </div>
     )}
   </div>
 }
 
-function aggregate(list, key) {
-  const map = {}
-  list.forEach(t => map[t[key] || '其他'] = (map[t[key] || '其他'] || 0) + Number(t.amount || 0))
-  return Object.entries(map).map(([name, value])=>({name, value})).filter(d=>d.value>0)
+
+function monthDailyExpenseData(expenseTx, monthDate) {
+  const year = monthDate.getFullYear()
+  const month = monthDate.getMonth()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  return Array.from({length: daysInMonth}, (_, i) => {
+    const day = i + 1
+    const iso = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+    return { day, date: iso, expense: expenseTx.filter(t=>t.date===iso).reduce((a,b)=>a+Number(b.amount||0),0) }
+  })
 }
-function dailyData(transactions) {
-  const days = []
-  for (let i=13;i>=0;i--) {
-    const d = new Date(); d.setDate(d.getDate()-i)
-    const iso = d.toISOString().slice(5,10)
-    const full = d.toISOString().slice(0,10)
-    days.push({
-      date: iso,
-      expense: transactions.filter(t=>t.date===full && t.type==='expense').reduce((a,b)=>a+b.amount,0),
-      income: transactions.filter(t=>t.date===full && t.type==='income').reduce((a,b)=>a+b.amount,0),
-      saving: transactions.filter(t=>t.date===full && t.type==='saving').reduce((a,b)=>a+b.amount,0),
-    })
-  }
-  return days
+
+function dailyMaxSingleExpenseData(expenseTx, monthDate) {
+  const year = monthDate.getFullYear()
+  const month = monthDate.getMonth()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  return Array.from({length: daysInMonth}, (_, i) => {
+    const day = i + 1
+    const iso = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+    const list = expenseTx.filter(t=>t.date===iso)
+    const max = list.length ? Math.max(...list.map(t=>Number(t.amount||0))) : 0
+    return { day, date: iso, max }
+  })
 }
-function dailySaving(transactions){ return dailyData(transactions).map(d=>({date:d.date, saving:d.saving})) }
+
+function topExpenses(expenseTx, n=3) {
+  return [...expenseTx].sort((a,b)=>Number(b.amount)-Number(a.amount)).slice(0,n)
+}
+
+function topDay(daily) {
+  const days = daily.filter(d => Number(d.expense) > 0)
+  return days.length ? [...days].sort((a,b)=>Number(b.expense)-Number(a.expense))[0] : null
+}
+
+async function downloadStoryStats(id, filename) {
+  const el = document.getElementById(id)
+  if (!el) return
+  const canvas = await html2canvas(el, { backgroundColor: null, scale: 2, width: 360, height: 640 })
+  const out = document.createElement('canvas')
+  out.width = 1080
+  out.height = 1920
+  const ctx = out.getContext('2d')
+  ctx.fillStyle = '#0f172a'
+  ctx.fillRect(0, 0, out.width, out.height)
+  ctx.drawImage(canvas, 0, 0, 1080, 1920)
+  out.toBlob(blob => {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = filename
+    a.click()
+  }, 'image/png')
+}
 
 function StatCard({theme, label, value}) {
   return <div className={`rounded-3xl border ${theme.card} p-4 shadow-soft backdrop-blur`}>
