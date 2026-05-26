@@ -37,6 +37,33 @@ async function apiRequest(path, options = {}) {
   return text ? JSON.parse(text) : null
 }
 
+function readStoredArray(key) {
+  try {
+    const raw = localStorage.getItem(key)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function txTime(tx) {
+  return Date.parse(tx?.updatedAt || tx?.createdAt || tx?.datetime || tx?.date || '') || 0
+}
+
+function mergeTransactions(localTransactions, remoteTransactions) {
+  const byId = new Map()
+
+  remoteTransactions.forEach((tx) => {
+    if (tx?.id) byId.set(tx.id, tx)
+  })
+  localTransactions.forEach((tx) => {
+    if (tx?.id) byId.set(tx.id, { ...byId.get(tx.id), ...tx })
+  })
+
+  return Array.from(byId.values()).sort((a, b) => txTime(b) - txTime(a))
+}
+
 const themes = {
   pro: { name:'金融專業版', desc:'黑白灰、Apple Card、高級金融感', bg:'theme-pro', accent:'from-slate-950 to-slate-600', card:'glass-card', chip:'chip-pro', colors:['#111827','#475569','#64748b','#94a3b8','#0f766e','#0284c7'] },
   jp: { name:'日本文青版', desc:'米白、淺啡、手帳 / MUJI 感', bg:'theme-jp', accent:'from-amber-700 to-stone-500', card:'glass-card warm', chip:'chip-warm', colors:['#92400e','#b45309','#d97706','#f59e0b','#78716c','#a16207'] },
@@ -103,12 +130,30 @@ function App() {
 
   useEffect(() => {
     let cancelled = false
+    const localTransactions = readStoredArray('mfv71-transactions')
 
     apiRequest('/transactions')
       .then((remoteTransactions) => {
         if (!cancelled && Array.isArray(remoteTransactions)) {
-          setTransactions(remoteTransactions)
-          notify('已連接 NAS')
+          const remoteIds = new Set(remoteTransactions.map((tx) => tx?.id).filter(Boolean))
+          const missingFromNas = localTransactions.filter((tx) => tx?.id && !remoteIds.has(tx.id))
+          const mergedTransactions = mergeTransactions(localTransactions, remoteTransactions)
+
+          setTransactions(mergedTransactions)
+
+          if (missingFromNas.length) {
+            Promise.allSettled(
+              missingFromNas.map((tx) =>
+                apiRequest('/transactions', {
+                  method: 'POST',
+                  body: JSON.stringify(tx),
+                })
+              )
+            )
+            notify(`已合併 ${missingFromNas.length} 筆本機資料到 NAS`)
+          } else {
+            notify('已連接 NAS')
+          }
         }
       })
       .catch(() => {
