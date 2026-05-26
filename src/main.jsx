@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { motion, AnimatePresence } from 'framer-motion'
 import html2canvas from 'html2canvas'
@@ -21,6 +21,21 @@ const yesterdayISO = () => {
   return d.toISOString().slice(0, 10)
 }
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
+const API_BASE = (import.meta.env.VITE_MONEYFLOW_API_URL || 'https://api.pigpocket.org').replace(/\/$/, '')
+
+async function apiRequest(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  })
+
+  if (!response.ok) {
+    throw new Error(`API ${response.status}`)
+  }
+
+  const text = await response.text()
+  return text ? JSON.parse(text) : null
+}
 
 const themes = {
   pro: { name:'金融專業版', desc:'黑白灰、Apple Card、高級金融感', bg:'theme-pro', accent:'from-slate-950 to-slate-600', card:'glass-card', chip:'chip-pro', colors:['#111827','#475569','#64748b','#94a3b8','#0f766e','#0284c7'] },
@@ -86,12 +101,35 @@ function App() {
   const [entryMode, setEntryMode] = useState(null)
   const theme = themes[themeId] || themes.pro
 
+  useEffect(() => {
+    let cancelled = false
+
+    apiRequest('/transactions')
+      .then((remoteTransactions) => {
+        if (!cancelled && Array.isArray(remoteTransactions)) {
+          setTransactions(remoteTransactions)
+          notify('已連接 NAS')
+        }
+      })
+      .catch(() => {
+        if (!cancelled) notify('NAS 暫時連不到，使用本機資料')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const notify = (message) => {
     setToast(message)
     setTimeout(()=>setToast(''), 1700)
   }
   const addTransaction = (tx) => {
     setTransactions([tx, ...transactions])
+    apiRequest('/transactions', {
+      method: 'POST',
+      body: JSON.stringify(tx),
+    }).catch(() => notify('已存本機，NAS 同步失敗'))
     notify(`${tx.emoji || '✅'} 已新增 ${tx.category} ${money.format(tx.amount)}`)
   }
   const updateTransaction = (tx) => {
