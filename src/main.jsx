@@ -22,6 +22,7 @@ const yesterdayISO = () => {
 }
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
 const API_BASE = (import.meta.env.VITE_MONEYFLOW_API_URL || 'https://api.pigpocket.org').replace(/\/$/, '')
+const SYNC_RECORD_TYPE = '__moneyflow_sync_state__'
 
 async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -51,6 +52,10 @@ function txTime(tx) {
   return Date.parse(tx?.updatedAt || tx?.createdAt || tx?.datetime || tx?.date || '') || 0
 }
 
+function isSyncRecord(tx) {
+  return tx?.type === SYNC_RECORD_TYPE || tx?.moneyflowSync === true
+}
+
 function mergeTransactions(localTransactions, remoteTransactions) {
   const byId = new Map()
 
@@ -62,6 +67,62 @@ function mergeTransactions(localTransactions, remoteTransactions) {
   })
 
   return Array.from(byId.values()).sort((a, b) => txTime(b) - txTime(a))
+}
+
+function readRemoteState(remoteTransactions) {
+  const rawTransactions = Array.isArray(remoteTransactions) ? remoteTransactions : []
+  const syncRecords = rawTransactions
+    .filter(isSyncRecord)
+    .sort((a, b) => txTime(b) - txTime(a))
+  const latestSync = syncRecords[0]?.payload || {}
+  const transactionsFromRows = rawTransactions.filter((tx) => tx?.id && !isSyncRecord(tx))
+  const transactionsFromSync = Array.isArray(latestSync.transactions) ? latestSync.transactions : []
+  const quickKeysFromSync = Array.isArray(latestSync.quickKeys) ? latestSync.quickKeys : []
+
+  return {
+    transactions: mergeTransactions(transactionsFromRows, transactionsFromSync),
+    quickKeys: quickKeysFromSync,
+  }
+}
+
+function buildSyncRecord(transactions, quickKeys) {
+  const updatedAt = new Date().toISOString()
+
+  return {
+    id: `sync-${Date.now().toString(36)}-${uid()}`,
+    type: SYNC_RECORD_TYPE,
+    amount: 0,
+    category: 'sync',
+    emoji: '🔄',
+    payment: 'NAS',
+    date: updatedAt.slice(0, 10),
+    note: 'MoneyFlow sync state',
+    createdAt: updatedAt,
+    updatedAt,
+    moneyflowSync: true,
+    payload: {
+      transactions: Array.isArray(transactions) ? transactions.filter((tx) => !isSyncRecord(tx)) : [],
+      quickKeys: Array.isArray(quickKeys) ? quickKeys : [],
+    },
+  }
+}
+
+async function publishSyncState(transactions, quickKeys) {
+  const cleanTransactions = Array.isArray(transactions) ? transactions.filter((tx) => !isSyncRecord(tx)) : []
+  const cleanQuickKeys = Array.isArray(quickKeys) ? quickKeys : []
+
+  try {
+    await apiRequest('/sync', {
+      method: 'PUT',
+      body: JSON.stringify({ transactions: cleanTransactions, quickKeys: cleanQuickKeys }),
+    })
+    return
+  } catch {
+    await apiRequest('/transactions', {
+      method: 'POST',
+      body: JSON.stringify(buildSyncRecord(cleanTransactions, cleanQuickKeys)),
+    })
+  }
 }
 
 const themes = {
@@ -131,29 +192,21 @@ function App() {
   useEffect(() => {
     let cancelled = false
     const localTransactions = readStoredArray('mfv71-transactions')
+    const localQuickKeys = readStoredArray('mfv71-quickkeys')
 
     apiRequest('/transactions')
       .then((remoteTransactions) => {
         if (!cancelled && Array.isArray(remoteTransactions)) {
-          const remoteIds = new Set(remoteTransactions.map((tx) => tx?.id).filter(Boolean))
-          const missingFromNas = localTransactions.filter((tx) => tx?.id && !remoteIds.has(tx.id))
-          const mergedTransactions = mergeTransactions(localTransactions, remoteTransactions)
+          const remoteState = readRemoteState(remoteTransactions)
+          const mergedTransactions = mergeTransactions(localTransactions, remoteState.transactions)
+          const mergedQuickKeys = remoteState.quickKeys.length ? remoteState.quickKeys : localQuickKeys
 
           setTransactions(mergedTransactions)
+          setQuickKeys(mergedQuickKeys)
 
-          if (missingFromNas.length) {
-            Promise.allSettled(
-              missingFromNas.map((tx) =>
-                apiRequest('/transactions', {
-                  method: 'POST',
-                  body: JSON.stringify(tx),
-                })
-              )
-            )
-            notify(`已合併 ${missingFromNas.length} 筆本機資料到 NAS`)
-          } else {
-            notify('已連接 NAS')
-          }
+          publishSyncState(mergedTransactions, mergedQuickKeys)
+            .then(() => !cancelled && notify('已同步 NAS'))
+            .catch(() => !cancelled && notify('NAS 可讀取，但暫時未能寫入同步'))
         }
       })
       .catch(() => {
@@ -170,24 +223,28 @@ function App() {
     setTimeout(()=>setToast(''), 1700)
   }
   const addTransaction = (tx) => {
-    setTransactions([tx, ...transactions])
-    apiRequest('/transactions', {
-      method: 'POST',
-      body: JSON.stringify(tx),
-    }).catch(() => notify('已存本機，NAS 同步失敗'))
-    notify(`${tx.emoji || '✅'} 已新增 ${tx.category} ${money.format(tx.amount)}`)
+    const nextTransactions = [tx, ...transactions]
+    setTransactions(nextTransactions)
+    publishSyncState(nextTransactions, quickKeys).catch(() => notify('NAS 暫時未能更新'))
+    notify(`${tx.emoji || '💸'} 已新增 ${tx.category} ${money.format(tx.amount)}`)
   }
   const updateTransaction = (tx) => {
-    setTransactions(transactions.map(t => t.id === tx.id ? tx : t))
+    const nextTransactions = transactions.map(t => t.id === tx.id ? tx : t)
+    setTransactions(nextTransactions)
+    publishSyncState(nextTransactions, quickKeys).catch(() => notify('NAS 暫時未能更新'))
     setEditor(null)
-    notify('已更新交易')
+    notify('已更新記錄')
   }
   const deleteTransaction = (id) => {
-    setTransactions(transactions.filter(t => t.id !== id))
+    const nextTransactions = transactions.filter(t => t.id !== id)
+    setTransactions(nextTransactions)
+    publishSyncState(nextTransactions, quickKeys).catch(() => notify('NAS 暫時未能更新'))
     setEditor(null)
-    notify('已刪除交易')
+    notify('已刪除記錄')
   }
-  const props = { transactions, setTransactions, quickKeys, setQuickKeys, theme, themeId, setThemeId, payment, setPayment, addTransaction, setEditor, setPage, notify, setEntryMode }
+  const syncAppState = (nextTransactions = transactions, nextQuickKeys = quickKeys) =>
+    publishSyncState(nextTransactions, nextQuickKeys).catch(() => notify('NAS 暫時未能更新'))
+  const props = { transactions, setTransactions, quickKeys, setQuickKeys, syncAppState, theme, themeId, setThemeId, payment, setPayment, addTransaction, setEditor, setPage, notify, setEntryMode }
 
   return <div className={`app-shell ${theme.bg}`}>
     <div className="app-content">
@@ -404,24 +461,28 @@ function StatsPage({ transactions, theme }) {
   </div>
 }
 
-function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, transactions, setTransactions, notify }) {
+function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, syncAppState, transactions, setTransactions, notify }) {
   const [draft, setDraft] = useState({emoji:'☕', name:'Coffee', amount:'38', category:'雜項', payment:'八達通', visible:true})
   const fileRef = useRef(null)
+  const saveQuickKeys = (nextQuickKeys) => {
+    setQuickKeys(nextQuickKeys)
+    syncAppState(transactions, nextQuickKeys)
+  }
   const addKey = () => {
     if (!draft.name || !Number(draft.amount)) return
-    setQuickKeys([...quickKeys, {...draft, id:uid(), amount:Number(draft.amount)}])
+    saveQuickKeys([...quickKeys, {...draft, id:uid(), amount:Number(draft.amount)}])
     setDraft({emoji:'☕', name:'Coffee', amount:'38', category:'雜項', payment:'八達通', visible:true})
     notify('快捷鍵已新增')
   }
-  const updateKey = (id, patch) => setQuickKeys(quickKeys.map(k=>k.id===id?{...k,...patch}:k))
-  const deleteKey = (id) => setQuickKeys(quickKeys.filter(k=>k.id!==id))
+  const updateKey = (id, patch) => saveQuickKeys(quickKeys.map(k=>k.id===id?{...k,...patch}:k))
+  const deleteKey = (id) => saveQuickKeys(quickKeys.filter(k=>k.id!==id))
   const move = (i, dir) => {
     const arr = [...quickKeys]
     const ni = i + dir
     if (ni < 0 || ni >= arr.length) return
     const [x] = arr.splice(i,1)
     arr.splice(ni,0,x)
-    setQuickKeys(arr)
+    saveQuickKeys(arr)
   }
   const reset = () => {
     if(!confirm('確定要重設所有資料嗎？')) return
@@ -466,8 +527,11 @@ function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, tra
       <input ref={fileRef} type="file" hidden accept="application/json" onChange={async e=>{
         const f=e.target.files?.[0]; if(!f) return
         const data=JSON.parse(await f.text())
-        if(data.transactions) setTransactions(data.transactions)
-        if(data.quickKeys) setQuickKeys(data.quickKeys)
+        const nextTransactions = Array.isArray(data.transactions) ? data.transactions : transactions
+        const nextQuickKeys = Array.isArray(data.quickKeys) ? data.quickKeys : quickKeys
+        setTransactions(nextTransactions)
+        setQuickKeys(nextQuickKeys)
+        syncAppState(nextTransactions, nextQuickKeys)
         notify('已匯入備份')
       }}/>
     </Panel>
