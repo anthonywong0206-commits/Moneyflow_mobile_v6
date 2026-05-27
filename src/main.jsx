@@ -23,6 +23,11 @@ const yesterdayISO = () => {
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
 const API_BASE = (import.meta.env.VITE_MONEYFLOW_API_URL || 'https://api.pigpocket.org').replace(/\/$/, '')
 const SYNC_RECORD_TYPE = '__moneyflow_sync_state__'
+const BACKUP_FREQUENCY_OPTIONS = [
+  { id: 'manual', label: '手動', intervalMs: 0 },
+  { id: 'daily', label: '每日', intervalMs: 24 * 60 * 60 * 1000 },
+  { id: 'weekly', label: '每星期', intervalMs: 7 * 24 * 60 * 60 * 1000 },
+]
 
 async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -142,6 +147,42 @@ async function publishSyncState(transactions, quickKeys) {
   }
 }
 
+function shouldRunBackup(frequency, lastBackupAt) {
+  const option = BACKUP_FREQUENCY_OPTIONS.find((item) => item.id === frequency)
+  if (!option?.intervalMs) return false
+
+  const lastTime = Date.parse(lastBackupAt || '')
+  return !lastTime || Date.now() - lastTime >= option.intervalMs
+}
+
+async function createNasBackup(transactions, quickKeys) {
+  const result = await apiRequest('/backups', {
+    method: 'POST',
+    body: JSON.stringify({
+      source: 'MoneyFlow app',
+      transactions: Array.isArray(transactions) ? transactions.filter((tx) => !isSyncRecord(tx)) : [],
+      quickKeys: Array.isArray(quickKeys) ? quickKeys : [],
+    }),
+  })
+
+  return result?.backup || result
+}
+
+async function listNasBackups() {
+  const result = await apiRequest('/backups')
+  return Array.isArray(result?.backups) ? result.backups : []
+}
+
+async function getNasBackup(id) {
+  return apiRequest(`/backups/${encodeURIComponent(id)}`)
+}
+
+function formatBackupDate(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '未有'
+  return date.toLocaleString('zh-HK', { dateStyle: 'short', timeStyle: 'short' })
+}
+
 const themes = {
   pro: { name:'金融專業版', desc:'黑白灰、Apple Card、高級金融感', bg:'theme-pro', accent:'from-slate-950 to-slate-600', card:'glass-card', chip:'chip-pro', colors:['#111827','#475569','#64748b','#94a3b8','#0f766e','#0284c7'] },
   jp: { name:'日本文青版', desc:'米白、淺啡、手帳 / MUJI 感', bg:'theme-jp', accent:'from-amber-700 to-stone-500', card:'glass-card warm', chip:'chip-warm', colors:['#92400e','#b45309','#d97706','#f59e0b','#78716c','#a16207'] },
@@ -201,39 +242,21 @@ function App() {
   const [quickKeys, setQuickKeys] = useLocal('mfv71-quickkeys', seedKeys)
   const [themeId, setThemeId] = useLocal('mfv71-theme','pro')
   const [payment, setPayment] = useLocal('mfv71-payment','八達通')
+  const [backupFrequency, setBackupFrequency] = useLocal('mfv71-backup-frequency', 'daily')
+  const [lastBackupAt, setLastBackupAt] = useLocal('mfv71-last-backup-at', '')
   const [toast, setToast] = useState('')
   const [editor, setEditor] = useState(null)
   const [entryMode, setEntryMode] = useState(null)
   const theme = themes[themeId] || themes.pro
-
   useEffect(() => {
-    let cancelled = false
-    const localTransactions = readStoredArray('mfv71-transactions')
-    const localQuickKeys = readStoredArray('mfv71-quickkeys')
+    if (!shouldRunBackup(backupFrequency, lastBackupAt)) return
 
-    apiRequest('/sync')
-      .catch(() => apiRequest('/transactions'))
-      .then((remoteResponse) => {
-        if (!cancelled) {
-          const remoteState = normalizeSyncResponse(remoteResponse)
-          const mergedTransactions = mergeTransactions(localTransactions, remoteState.transactions)
-          const mergedQuickKeys = remoteState.quickKeys.length ? remoteState.quickKeys : localQuickKeys
-
-          setTransactions(mergedTransactions)
-          setQuickKeys(mergedQuickKeys)
-
-          publishSyncState(mergedTransactions, mergedQuickKeys)
-            .then(() => !cancelled && notify('已同步 NAS'))
-            .catch(() => !cancelled && notify('NAS 可讀取，但暫時未能寫入同步'))
-        }
+    createNasBackup(transactions, quickKeys)
+      .then((backup) => {
+        setLastBackupAt(backup?.createdAt || new Date().toISOString())
+        notify('NAS 備份完成')
       })
-      .catch(() => {
-        if (!cancelled) notify('NAS 暫時連不到，使用本機資料')
-      })
-
-    return () => {
-      cancelled = true
-    }
+      .catch(() => notify('NAS 備份暫時失敗'))
   }, [])
 
   const notify = (message) => {
@@ -243,26 +266,21 @@ function App() {
   const addTransaction = (tx) => {
     const nextTransactions = [tx, ...transactions]
     setTransactions(nextTransactions)
-    publishSyncState(nextTransactions, quickKeys).catch(() => notify('NAS 暫時未能更新'))
     notify(`${tx.emoji || '💸'} 已新增 ${tx.category} ${money.format(tx.amount)}`)
   }
   const updateTransaction = (tx) => {
     const nextTransactions = transactions.map(t => t.id === tx.id ? tx : t)
     setTransactions(nextTransactions)
-    publishSyncState(nextTransactions, quickKeys).catch(() => notify('NAS 暫時未能更新'))
     setEditor(null)
     notify('已更新記錄')
   }
   const deleteTransaction = (id) => {
     const nextTransactions = transactions.filter(t => t.id !== id)
     setTransactions(nextTransactions)
-    publishSyncState(nextTransactions, quickKeys).catch(() => notify('NAS 暫時未能更新'))
     setEditor(null)
     notify('已刪除記錄')
   }
-  const syncAppState = (nextTransactions = transactions, nextQuickKeys = quickKeys) =>
-    publishSyncState(nextTransactions, nextQuickKeys).catch(() => notify('NAS 暫時未能更新'))
-  const props = { transactions, setTransactions, quickKeys, setQuickKeys, syncAppState, theme, themeId, setThemeId, payment, setPayment, addTransaction, setEditor, setPage, notify, setEntryMode }
+  const props = { transactions, setTransactions, quickKeys, setQuickKeys, backupFrequency, setBackupFrequency, lastBackupAt, setLastBackupAt, theme, themeId, setThemeId, payment, setPayment, addTransaction, setEditor, setPage, notify, setEntryMode }
 
   return <div className={`app-shell ${theme.bg}`}>
     <div className="app-content">
@@ -479,12 +497,13 @@ function StatsPage({ transactions, theme }) {
   </div>
 }
 
-function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, syncAppState, transactions, setTransactions, notify }) {
+function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, backupFrequency, setBackupFrequency, lastBackupAt, setLastBackupAt, transactions, setTransactions, notify }) {
   const [draft, setDraft] = useState({emoji:'☕', name:'Coffee', amount:'38', category:'雜項', payment:'八達通', visible:true})
+  const [backups, setBackups] = useState([])
+  const [backupLoading, setBackupLoading] = useState(false)
   const fileRef = useRef(null)
   const saveQuickKeys = (nextQuickKeys) => {
     setQuickKeys(nextQuickKeys)
-    syncAppState(transactions, nextQuickKeys)
   }
   const addKey = () => {
     if (!draft.name || !Number(draft.amount)) return
@@ -501,6 +520,41 @@ function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, syn
     const [x] = arr.splice(i,1)
     arr.splice(ni,0,x)
     saveQuickKeys(arr)
+  }
+  const refreshBackups = () => {
+    setBackupLoading(true)
+    listNasBackups()
+      .then(setBackups)
+      .catch(() => notify('NAS 備份列表暫時讀不到'))
+      .finally(() => setBackupLoading(false))
+  }
+  useEffect(() => {
+    refreshBackups()
+  }, [])
+  const runBackup = () => {
+    setBackupLoading(true)
+    createNasBackup(transactions, quickKeys)
+      .then((backup) => {
+        setLastBackupAt(backup?.createdAt || new Date().toISOString())
+        notify('NAS 備份完成')
+        refreshBackups()
+      })
+      .catch(() => notify('NAS 備份暫時失敗'))
+      .finally(() => setBackupLoading(false))
+  }
+  const restoreBackup = (backup) => {
+    if (!confirm(`Restore NAS backup from ${formatBackupDate(backup.createdAt)}? Current local data will be replaced.`)) return
+    setBackupLoading(true)
+    getNasBackup(backup.id)
+      .then((data) => {
+        const nextTransactions = Array.isArray(data.transactions) ? data.transactions : []
+        const nextQuickKeys = Array.isArray(data.quickKeys) ? data.quickKeys : []
+        setTransactions(nextTransactions)
+        setQuickKeys(nextQuickKeys)
+        notify('已還原 NAS 備份')
+      })
+      .catch(() => notify('還原備份失敗'))
+      .finally(() => setBackupLoading(false))
   }
   const reset = () => {
     if(!confirm('確定要重設所有資料嗎？')) return
@@ -535,6 +589,26 @@ function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, syn
       </div>
     </Panel>
     <Panel theme={theme}>
+      <Section title="NAS Backup" sub="NAS only stores backup snapshots. It will not overwrite local data unless you restore one." />
+      <div className="backup-tools">
+        <label>Backup frequency</label>
+        <select value={backupFrequency} onChange={e=>setBackupFrequency(e.target.value)}>
+          {BACKUP_FREQUENCY_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+        </select>
+        <small>Last backup: {formatBackupDate(lastBackupAt)}</small>
+        <div className="settings-grid">
+          <button onClick={runBackup} disabled={backupLoading}><Save size={18}/>Backup now</button>
+          <button onClick={refreshBackups} disabled={backupLoading}><Download size={18}/>Refresh list</button>
+        </div>
+      </div>
+      <div className="backup-list">
+        {backups.length ? backups.map(backup => <button key={backup.id} className="backup-row" onClick={()=>restoreBackup(backup)} disabled={backupLoading}>
+          <span><b>{formatBackupDate(backup.createdAt)}</b><small>{backup.transactionCount} records · {backup.quickKeyCount} quick keys</small></span>
+          <em>Restore</em>
+        </button>) : <Empty text={backupLoading ? "Loading backups..." : "No NAS backups yet."}/>} 
+      </div>
+    </Panel>
+    <Panel theme={theme}>
       <Section title="資料管理" />
       <div className="settings-grid">
         <button onClick={exportCsv}><Download size={18}/>匯出 CSV</button>
@@ -549,7 +623,6 @@ function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, syn
         const nextQuickKeys = Array.isArray(data.quickKeys) ? data.quickKeys : quickKeys
         setTransactions(nextTransactions)
         setQuickKeys(nextQuickKeys)
-        syncAppState(nextTransactions, nextQuickKeys)
         notify('已匯入備份')
       }}/>
     </Panel>
