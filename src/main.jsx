@@ -85,6 +85,23 @@ function readRemoteState(remoteTransactions) {
   }
 }
 
+function normalizeSyncResponse(response) {
+  if (Array.isArray(response)) {
+    return readRemoteState(response)
+  }
+
+  if (response && typeof response === 'object') {
+    return {
+      transactions: Array.isArray(response.transactions)
+        ? response.transactions.filter((tx) => tx?.id && !isSyncRecord(tx))
+        : [],
+      quickKeys: Array.isArray(response.quickKeys) ? response.quickKeys : [],
+    }
+  }
+
+  return { transactions: [], quickKeys: [] }
+}
+
 function buildSyncRecord(transactions, quickKeys) {
   const updatedAt = new Date().toISOString()
 
@@ -194,10 +211,11 @@ function App() {
     const localTransactions = readStoredArray('mfv71-transactions')
     const localQuickKeys = readStoredArray('mfv71-quickkeys')
 
-    apiRequest('/transactions')
-      .then((remoteTransactions) => {
-        if (!cancelled && Array.isArray(remoteTransactions)) {
-          const remoteState = readRemoteState(remoteTransactions)
+    apiRequest('/sync')
+      .catch(() => apiRequest('/transactions'))
+      .then((remoteResponse) => {
+        if (!cancelled) {
+          const remoteState = normalizeSyncResponse(remoteResponse)
           const mergedTransactions = mergeTransactions(localTransactions, remoteState.transactions)
           const mergedQuickKeys = remoteState.quickKeys.length ? remoteState.quickKeys : localQuickKeys
 
