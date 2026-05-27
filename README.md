@@ -1,28 +1,21 @@
-# MoneyFlow v7.1 白屏修正版
+# MoneyFlow v7.2 Stable Rescue
 
-## 修正重點
-- 重新生成 React 主程式，避免 v7 patch 殘留造成白屏
-- Vite 固定 5.4.11，禁止 Vite 8
-- Stats 頁最上方只顯示「每月累計支出」
-- Stats 圖表包含：
-  - 類別開支比例
-  - 每日消費變化
-  - 每日最大單項消費
-  - 每月最大單項消費
-- 新增「生成 IG 圖」：1080 x 1920 Story 圖片
-- 自訂日期 Date Picker 可正常顯示
-- Calendar 只保留日曆
+這是白屏修正版，重點是穩定載入。
 
-## 本地運行
+## 改動
+- 移除 Recharts / Framer Motion / Lucide，避免 runtime 白屏
+- 使用純 React + CSS + SVG 圖表
+- Vite 固定 5.4.11
+- `base: './'`，同時支援 Vercel / GitHub Pages 靜態路徑
+- Stats 頁：每月累計支出、類別開支比例、每日消費變化、每日最大單項消費、每月最大單項消費
+- 一鍵生成 IG Story 尺寸圖片
+
+## 使用
 ```bash
 npm install
 npm run dev
-```
-
-## Build
-```bash
 npm run build
 ```
 
 ## Vercel
-已包含 vercel.json。
+直接上載 GitHub 後由 Vercel deploy。

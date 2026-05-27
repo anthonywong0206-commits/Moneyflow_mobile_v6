@@ -1,307 +1,38 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { motion, AnimatePresence } from 'framer-motion'
 import html2canvas from 'html2canvas'
-import {
-  Home, PlusCircle, CalendarDays, BarChart3, Settings, WalletCards, PiggyBank,
-  Download, Share2, X, Trash2, GripVertical, ChevronLeft, ChevronRight,
-  CheckCircle2, Palette, Save, Upload
-} from 'lucide-react'
-import {
-  ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, BarChart, Bar
-} from 'recharts'
-import './styles.css'
+import './style.css'
 
 const money = new Intl.NumberFormat('zh-HK', { style: 'currency', currency: 'HKD', maximumFractionDigits: 1 })
-const todayISO = () => new Date().toISOString().slice(0, 10)
-const yesterdayISO = () => {
-  const d = new Date()
-  d.setDate(d.getDate() - 1)
-  return d.toISOString().slice(0, 10)
-}
+const todayISO = () => new Date().toISOString().slice(0,10)
+const yesterdayISO = () => { const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10) }
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
-const API_BASE = (import.meta.env.VITE_MONEYFLOW_API_URL || 'https://api.pigpocket.org').replace(/\/$/, '')
-const SYNC_RECORD_TYPE = '__moneyflow_sync_state__'
-const BACKUP_RECORD_TYPE = '__moneyflow_backup__'
-const BACKUP_RETENTION_MS = 14 * 24 * 60 * 60 * 1000
-const BACKUP_FREQUENCY_OPTIONS = [
-  { id: 'manual', label: '手動', intervalMs: 0 },
-  { id: 'daily', label: '每日', intervalMs: 24 * 60 * 60 * 1000 },
-  { id: 'weekly', label: '每星期', intervalMs: 7 * 24 * 60 * 60 * 1000 },
+
+const cats = [
+  ['早餐','🍳'], ['午餐','🍱'], ['晚餐','🍜'], ['交通','🚌'], ['購物','🛍'], ['寵物','🐶'], ['雜項','📦']
 ]
-
-async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  })
-
-  if (!response.ok) {
-    throw new Error(`API ${response.status}`)
-  }
-
-  const text = await response.text()
-  return text ? JSON.parse(text) : null
+const payments = ['現金','八達通','支付寶','信用卡','PayMe','FPS']
+const incomeCats = ['薪金','兼職','津貼','退款','利息','禮金','其他收入']
+const savingCats = ['定期儲蓄','投資戶口','應急基金','旅行基金','寵物基金','其他儲蓄']
+const themeList = {
+  pro: ['金融專業版','pro'],
+  jp: ['日本文青版','jp'],
+  fairy: ['童話風','fairy'],
+  cat: ['貓貓可愛版','cat'],
+  neon: ['Cyber Neon','neon']
 }
-
-function readStoredArray(key) {
-  try {
-    const raw = localStorage.getItem(key)
-    const parsed = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
-function txTime(tx) {
-  return Date.parse(tx?.updatedAt || tx?.createdAt || tx?.datetime || tx?.date || '') || 0
-}
-
-function isSyncRecord(tx) {
-  return tx?.type === SYNC_RECORD_TYPE || tx?.moneyflowSync === true
-}
-
-function isBackupRecord(tx) {
-  return tx?.type === BACKUP_RECORD_TYPE || tx?.moneyflowBackup === true
-}
-
-function mergeTransactions(localTransactions, remoteTransactions) {
-  const byId = new Map()
-
-  remoteTransactions.forEach((tx) => {
-    if (tx?.id) byId.set(tx.id, tx)
-  })
-  localTransactions.forEach((tx) => {
-    if (tx?.id) byId.set(tx.id, { ...byId.get(tx.id), ...tx })
-  })
-
-  return Array.from(byId.values()).sort((a, b) => txTime(b) - txTime(a))
-}
-
-function readRemoteState(remoteTransactions) {
-  const rawTransactions = Array.isArray(remoteTransactions) ? remoteTransactions : []
-  const syncRecords = rawTransactions
-    .filter(isSyncRecord)
-    .sort((a, b) => txTime(b) - txTime(a))
-  const latestSync = syncRecords[0]?.payload || {}
-  const transactionsFromRows = rawTransactions.filter((tx) => tx?.id && !isSyncRecord(tx))
-  const transactionsFromSync = Array.isArray(latestSync.transactions) ? latestSync.transactions : []
-  const quickKeysFromSync = Array.isArray(latestSync.quickKeys) ? latestSync.quickKeys : []
-
-  return {
-    transactions: mergeTransactions(transactionsFromRows, transactionsFromSync),
-    quickKeys: quickKeysFromSync,
-  }
-}
-
-function normalizeSyncResponse(response) {
-  if (Array.isArray(response)) {
-    return readRemoteState(response)
-  }
-
-  if (response && typeof response === 'object') {
-    return {
-      transactions: Array.isArray(response.transactions)
-        ? response.transactions.filter((tx) => tx?.id && !isSyncRecord(tx))
-        : [],
-      quickKeys: Array.isArray(response.quickKeys) ? response.quickKeys : [],
-    }
-  }
-
-  return { transactions: [], quickKeys: [] }
-}
-
-function buildSyncRecord(transactions, quickKeys) {
-  const updatedAt = new Date().toISOString()
-
-  return {
-    id: `sync-${Date.now().toString(36)}-${uid()}`,
-    type: SYNC_RECORD_TYPE,
-    amount: 0,
-    category: 'sync',
-    emoji: '🔄',
-    payment: 'NAS',
-    date: updatedAt.slice(0, 10),
-    note: 'MoneyFlow sync state',
-    createdAt: updatedAt,
-    updatedAt,
-    moneyflowSync: true,
-    payload: {
-      transactions: Array.isArray(transactions) ? transactions.filter((tx) => !isSyncRecord(tx)) : [],
-      quickKeys: Array.isArray(quickKeys) ? quickKeys : [],
-    },
-  }
-}
-
-function buildBackupRecord(transactions, quickKeys) {
-  const createdAt = new Date().toISOString()
-
-  return {
-    id: `backup-${Date.now().toString(36)}-${uid()}`,
-    type: BACKUP_RECORD_TYPE,
-    amount: 0,
-    category: 'backup',
-    emoji: '💾',
-    payment: 'NAS',
-    date: createdAt.slice(0, 10),
-    note: 'MoneyFlow backup',
-    createdAt,
-    updatedAt: createdAt,
-    moneyflowBackup: true,
-    payload: {
-      transactions: Array.isArray(transactions)
-        ? transactions.filter((tx) => !isSyncRecord(tx) && !isBackupRecord(tx))
-        : [],
-      quickKeys: Array.isArray(quickKeys) ? quickKeys : [],
-    },
-  }
-}
-
-async function publishSyncState(transactions, quickKeys) {
-  const cleanTransactions = Array.isArray(transactions) ? transactions.filter((tx) => !isSyncRecord(tx)) : []
-  const cleanQuickKeys = Array.isArray(quickKeys) ? quickKeys : []
-
-  try {
-    await apiRequest('/sync', {
-      method: 'PUT',
-      body: JSON.stringify({ transactions: cleanTransactions, quickKeys: cleanQuickKeys }),
-    })
-    return
-  } catch {
-    await apiRequest('/transactions', {
-      method: 'POST',
-      body: JSON.stringify(buildSyncRecord(cleanTransactions, cleanQuickKeys)),
-    })
-  }
-}
-
-function shouldRunBackup(frequency, lastBackupAt) {
-  const option = BACKUP_FREQUENCY_OPTIONS.find((item) => item.id === frequency)
-  if (!option?.intervalMs) return false
-
-  const lastTime = Date.parse(lastBackupAt || '')
-  return !lastTime || Date.now() - lastTime >= option.intervalMs
-}
-
-async function createNasBackup(transactions, quickKeys) {
-  const cleanTransactions = Array.isArray(transactions)
-    ? transactions.filter((tx) => !isSyncRecord(tx) && !isBackupRecord(tx))
-    : []
-  const cleanQuickKeys = Array.isArray(quickKeys) ? quickKeys : []
-
-  try {
-    const result = await apiRequest('/backups', {
-      method: 'POST',
-      body: JSON.stringify({
-        source: 'MoneyFlow app',
-        transactions: cleanTransactions,
-        quickKeys: cleanQuickKeys,
-      }),
-    })
-
-    return result?.backup || result
-  } catch {
-    const record = buildBackupRecord(cleanTransactions, cleanQuickKeys)
-    await apiRequest('/transactions', {
-      method: 'POST',
-      body: JSON.stringify(record),
-    })
-    await pruneFallbackBackups()
-
-    return {
-      id: record.id,
-      createdAt: record.createdAt,
-      transactionCount: cleanTransactions.length,
-      quickKeyCount: cleanQuickKeys.length,
-      source: 'MoneyFlow fallback',
-    }
-  }
-}
-
-async function listNasBackups() {
-  try {
-    const result = await apiRequest('/backups')
-    return Array.isArray(result?.backups) ? result.backups : []
-  } catch {
-    const rows = await apiRequest('/transactions')
-    const records = Array.isArray(rows) ? rows.filter(isBackupRecord) : []
-    await pruneFallbackBackups(records)
-
-    return records
-      .map((record) => ({
-        id: record.id,
-        createdAt: record.createdAt,
-        transactionCount: Array.isArray(record.payload?.transactions) ? record.payload.transactions.length : 0,
-        quickKeyCount: Array.isArray(record.payload?.quickKeys) ? record.payload.quickKeys.length : 0,
-        source: 'MoneyFlow fallback',
-      }))
-      .sort((a, b) => txTime(b) - txTime(a))
-  }
-}
-
-async function getNasBackup(id) {
-  try {
-    return await apiRequest(`/backups/${encodeURIComponent(id)}`)
-  } catch {
-    const rows = await apiRequest('/transactions')
-    const record = Array.isArray(rows) ? rows.find((item) => item.id === id && isBackupRecord(item)) : null
-    if (!record) throw new Error('Backup not found')
-
-    return {
-      id: record.id,
-      createdAt: record.createdAt,
-      transactions: Array.isArray(record.payload?.transactions) ? record.payload.transactions : [],
-      quickKeys: Array.isArray(record.payload?.quickKeys) ? record.payload.quickKeys : [],
-    }
-  }
-}
-
-async function pruneFallbackBackups(existingRecords) {
-  const rows = existingRecords || await apiRequest('/transactions').catch(() => [])
-  const cutoff = Date.now() - BACKUP_RETENTION_MS
-  const expired = Array.isArray(rows)
-    ? rows.filter((record) => isBackupRecord(record) && txTime(record) && txTime(record) < cutoff)
-    : []
-
-  await Promise.allSettled(
-    expired.map((record) => apiRequest(`/transactions/${encodeURIComponent(record.id)}`, { method: 'DELETE' }))
-  )
-}
-
-function formatBackupDate(value) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未有'
-  return date.toLocaleString('zh-HK', { dateStyle: 'short', timeStyle: 'short' })
-}
-
-const themes = {
-  pro: { name:'金融專業版', desc:'黑白灰、Apple Card、高級金融感', bg:'theme-pro', accent:'from-slate-950 to-slate-600', card:'glass-card', chip:'chip-pro', colors:['#111827','#475569','#64748b','#94a3b8','#0f766e','#0284c7'] },
-  jp: { name:'日本文青版', desc:'米白、淺啡、手帳 / MUJI 感', bg:'theme-jp', accent:'from-amber-700 to-stone-500', card:'glass-card warm', chip:'chip-warm', colors:['#92400e','#b45309','#d97706','#f59e0b','#78716c','#a16207'] },
-  fairy: { name:'童話風', desc:'柔和 pastel、夢幻漸變', bg:'theme-fairy', accent:'from-pink-400 to-sky-400', card:'glass-card', chip:'chip-fairy', colors:['#fb7185','#a78bfa','#60a5fa','#34d399','#facc15','#f472b6'] },
-  cat: { name:'貓貓可愛版', desc:'奶油色、圓潤 UI、可愛感', bg:'theme-cat', accent:'from-orange-300 to-rose-300', card:'glass-card warm', chip:'chip-cat', colors:['#fb923c','#f97316','#f9a8d4','#fde68a','#84cc16','#fca5a5'] },
-  neon: { name:'Cyber Neon', desc:'深色、霓虹、科技感', bg:'theme-neon', accent:'from-cyan-400 to-fuchsia-500', card:'glass-card dark', chip:'chip-neon', colors:['#22d3ee','#e879f9','#818cf8','#34d399','#facc15','#fb7185'] },
-}
-
-const expenseCategories = [
-  { name:'早餐', emoji:'🍳' }, { name:'午餐', emoji:'🍱' }, { name:'晚餐', emoji:'🍜' },
-  { name:'交通', emoji:'🚌' }, { name:'購物', emoji:'🛍' }, { name:'寵物', emoji:'🐶' }, { name:'雜項', emoji:'📦' }
-]
-const paymentMethods = ['現金','八達通','支付寶','信用卡','PayMe','FPS']
-const incomeCategories = ['薪金','兼職','津貼','退款','利息','禮金','其他收入']
-const savingCategories = ['定期儲蓄','投資戶口','應急基金','旅行基金','寵物基金','其他儲蓄']
+const colors = ['#0f172a','#0284c7','#10b981','#f97316','#e11d48','#8b5cf6','#64748b']
 
 function makeTx(type, amount, category, emoji, payment, date, note='') {
-  return { id:uid(), type, amount:Number(amount), category, emoji, payment, date, note, createdAt:new Date().toISOString() }
+  return { id: uid(), type, amount: Number(amount), category, emoji, payment, date, note }
 }
-function seedTransactions() {
-  const d = (minus) => { const x = new Date(); x.setDate(x.getDate() - minus); return x.toISOString().slice(0,10) }
+function seedTx() {
+  const d = n => { const x=new Date(); x.setDate(x.getDate()-n); return x.toISOString().slice(0,10) }
   return [
     makeTx('expense',55,'午餐','🍱','八達通',d(0),'午餐'),
     makeTx('expense',12,'交通','🚌','八達通',d(0),'MTR'),
-    makeTx('saving',500,'應急基金','🐷','FPS',d(1),'每週儲蓄'),
     makeTx('income',12000,'薪金','💰','FPS',d(2),'薪金'),
+    makeTx('saving',500,'應急基金','🐷','FPS',d(1),'每週儲蓄'),
     makeTx('expense',88,'寵物','🐶','信用卡',d(3),'貓糧'),
     makeTx('expense',70,'晚餐','🍜','支付寶',d(4),'晚餐'),
     makeTx('expense',8.5,'交通','🚌','八達通',d(5),'巴士'),
@@ -309,542 +40,244 @@ function seedTransactions() {
   ]
 }
 const seedKeys = [
-  { id:uid(), emoji:'🍱', name:'午餐', amount:55, category:'午餐', payment:'八達通', visible:true },
-  { id:uid(), emoji:'🚇', name:'MTR', amount:12, category:'交通', payment:'八達通', visible:true },
-  { id:uid(), emoji:'🚌', name:'巴士', amount:8.5, category:'交通', payment:'八達通', visible:true },
-  { id:uid(), emoji:'🚕', name:'的士', amount:60, category:'交通', payment:'信用卡', visible:true },
-  { id:uid(), emoji:'🐱', name:'貓糧', amount:88, category:'寵物', payment:'信用卡', visible:true },
-  { id:uid(), emoji:'🍜', name:'晚餐', amount:70, category:'晚餐', payment:'支付寶', visible:true },
+  {id:uid(), emoji:'🍱', name:'午餐', amount:55, category:'午餐', payment:'八達通', visible:true},
+  {id:uid(), emoji:'🚇', name:'MTR', amount:12, category:'交通', payment:'八達通', visible:true},
+  {id:uid(), emoji:'🚌', name:'巴士', amount:8.5, category:'交通', payment:'八達通', visible:true},
+  {id:uid(), emoji:'🚕', name:'的士', amount:60, category:'交通', payment:'信用卡', visible:true},
+  {id:uid(), emoji:'🐱', name:'貓糧', amount:88, category:'寵物', payment:'信用卡', visible:true},
+  {id:uid(), emoji:'🍜', name:'晚餐', amount:70, category:'晚餐', payment:'支付寶', visible:true}
 ]
 
-function useLocal(key, initial) {
-  const [value, setValue] = useState(() => {
-    try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : initial } catch { return initial }
+function useStore(key, initial) {
+  const [v, setV] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(key)) || initial } catch { return initial }
   })
-  const save = (next) => {
-    const val = typeof next === 'function' ? next(value) : next
-    setValue(val)
+  const save = next => {
+    const val = typeof next === 'function' ? next(v) : next
+    setV(val)
     localStorage.setItem(key, JSON.stringify(val))
   }
-  return [value, save]
+  return [v, save]
 }
 
 function App() {
-  const [page, setPage] = useLocal('mfv71-page','home')
-  const [transactions, setTransactions] = useLocal('mfv71-transactions', seedTransactions())
-  const [quickKeys, setQuickKeys] = useLocal('mfv71-quickkeys', seedKeys)
-  const [themeId, setThemeId] = useLocal('mfv71-theme','pro')
-  const [payment, setPayment] = useLocal('mfv71-payment','八達通')
-  const [backupFrequency, setBackupFrequency] = useLocal('mfv71-backup-frequency', 'daily')
-  const [lastBackupAt, setLastBackupAt] = useLocal('mfv71-last-backup-at', '')
+  const [page, setPage] = useStore('pigpocket-page','home')
+  const [txs, setTxs] = useStore('pigpocket-txs', seedTx())
+  const [keys, setKeys] = useStore('pigpocket-keys', seedKeys)
+  const [theme, setTheme] = useStore('pigpocket-theme','cat')
+  const [payment, setPayment] = useStore('pigpocket-payment','八達通')
+  const [editing, setEditing] = useState(null)
+  const [entry, setEntry] = useState(null)
   const [toast, setToast] = useState('')
-  const [editor, setEditor] = useState(null)
-  const [entryMode, setEntryMode] = useState(null)
-  const theme = themes[themeId] || themes.pro
-  useEffect(() => {
-    if (!shouldRunBackup(backupFrequency, lastBackupAt)) return
 
-    createNasBackup(transactions, quickKeys)
-      .then((backup) => {
-        setLastBackupAt(backup?.createdAt || new Date().toISOString())
-        notify('NAS 備份完成')
-      })
-      .catch(() => notify('NAS 備份暫時失敗'))
-  }, [])
+  const notify = msg => { setToast(msg); setTimeout(()=>setToast(''),1600) }
+  const addTx = tx => { setTxs([tx, ...txs]); notify(`已新增 ${tx.category} ${money.format(tx.amount)}`) }
+  const updateTx = tx => { setTxs(txs.map(x=>x.id===tx.id?tx:x)); setEditing(null); notify('已更新') }
+  const delTx = id => { setTxs(txs.filter(x=>x.id!==id)); setEditing(null); notify('已刪除') }
 
-  const notify = (message) => {
-    setToast(message)
-    setTimeout(()=>setToast(''), 1700)
-  }
-  const addTransaction = (tx) => {
-    const nextTransactions = [tx, ...transactions]
-    setTransactions(nextTransactions)
-    notify(`${tx.emoji || '💸'} 已新增 ${tx.category} ${money.format(tx.amount)}`)
-  }
-  const updateTransaction = (tx) => {
-    const nextTransactions = transactions.map(t => t.id === tx.id ? tx : t)
-    setTransactions(nextTransactions)
-    setEditor(null)
-    notify('已更新記錄')
-  }
-  const deleteTransaction = (id) => {
-    const nextTransactions = transactions.filter(t => t.id !== id)
-    setTransactions(nextTransactions)
-    setEditor(null)
-    notify('已刪除記錄')
-  }
-  const props = { transactions, setTransactions, quickKeys, setQuickKeys, backupFrequency, setBackupFrequency, lastBackupAt, setLastBackupAt, theme, themeId, setThemeId, payment, setPayment, addTransaction, setEditor, setPage, notify, setEntryMode }
+  const props = { txs, setTxs, keys, setKeys, theme, setTheme, payment, setPayment, addTx, setEditing, setEntry, notify }
 
-  return <div className={`app-shell ${theme.bg}`}>
-    <div className="app-content">
-      <AnimatePresence mode="wait">
-        <motion.div key={page} initial={{opacity:0,y:12}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-8}} transition={{duration:.2}}>
-          {page === 'home' && <HomePage {...props} />}
-          {page === 'quick' && <QuickAddPage {...props} />}
-          {page === 'calendar' && <CalendarPage {...props} />}
-          {page === 'stats' && <StatsPage {...props} />}
-          {page === 'settings' && <SettingsPage {...props} />}
-        </motion.div>
-      </AnimatePresence>
-    </div>
-    <BottomNav page={page} setPage={setPage} theme={theme} />
-    <AnimatePresence>{toast && <Toast text={toast}/>}</AnimatePresence>
-    <AnimatePresence>{editor && <EditSheet item={editor} theme={theme} onClose={()=>setEditor(null)} onSave={updateTransaction} onDelete={deleteTransaction}/>}</AnimatePresence>
-    <AnimatePresence>{entryMode && <EntrySheet mode={entryMode} theme={theme} payment={payment} setPayment={setPayment} onClose={()=>setEntryMode(null)} onAdd={(tx)=>{addTransaction(tx);setEntryMode(null)}}/>}</AnimatePresence>
+  return <div className={`app ${theme}`}>
+    <main>
+      {page==='home' && <HomePage {...props} setPage={setPage}/>}
+      {page==='quick' && <QuickPage {...props}/>}
+      {page==='calendar' && <CalendarPage {...props}/>}
+      {page==='stats' && <StatsPage {...props}/>}
+      {page==='settings' && <SettingsPage {...props}/>}
+    </main>
+    <nav className="nav">
+      {[
+        ['home','⌂','Home'],['quick','＋','Quick'],['calendar','◷','Calendar'],['stats','◬','Stats'],['settings','⚙','Settings']
+      ].map(([id, icon, label]) => <button key={id} onClick={()=>setPage(id)} className={page===id?'on':''}><b>{icon}</b><span>{label}</span></button>)}
+    </nav>
+    {editing && <EditSheet item={editing} onSave={updateTx} onDelete={delTx} onClose={()=>setEditing(null)} />}
+    {entry && <EntrySheet mode={entry} payment={payment} setPayment={setPayment} onClose={()=>setEntry(null)} onAdd={tx=>{addTx(tx); setEntry(null)}} />}
+    {toast && <div className="toast">✓ {toast}</div>}
   </div>
 }
 
-function HomePage({ transactions, quickKeys, addTransaction, setEditor, setPage, setEntryMode, theme }) {
-  const summary = getSummary(transactions)
-  const keys = quickKeys.filter(k=>k.visible).slice(0,8)
+function HomePage({txs, keys, addTx, setEditing, setPage, setEntry}) {
+  const s = summary(txs)
   return <div className="page">
-    <Header title="MoneyFlow" subtitle="清楚記錄每一天的金錢流向。" />
-    <div className={`wallet-card bg-gradient-to-br ${theme.accent}`}>
-      <div>
-        <p>本月結餘</p>
-        <h2>{money.format(summary.balance)}</h2>
+    <Header title="Pig Pocket" sub="讓記帳變成一件可愛的事。" />
+    <section className="hero-pig"><div><p className="badge">小豬記帳 · 3秒完成記錄</p><h2>今日都有好好照顧錢包 🐷</h2><span>支出、收入、儲蓄，一眼看清。</span></div><div className="piggy">🐷</div></section>
+    <section className="wallet">
+      <p>本月結餘</p><h2>{money.format(s.balance)}</h2>
+      <div className="walletgrid">
+        <Small label="支出" value={money.format(s.expense)}/>
+        <Small label="收入" value={money.format(s.income)}/>
+        <Small label="儲蓄" value={money.format(s.saving)}/>
+        <Small label="今日" value={money.format(s.today)}/>
+        <Small label="儲蓄率" value={`${s.rate}%`}/>
+        <Small label="紀錄" value={`${s.count} 筆`}/>
       </div>
-      <WalletCards/>
-      <div className="wallet-grid">
-        <Small label="支出" value={money.format(summary.expense)} />
-        <Small label="收入" value={money.format(summary.income)} />
-        <Small label="儲蓄" value={money.format(summary.saving)} />
-        <Small label="今日" value={money.format(summary.todayExpense)} />
-        <Small label="儲蓄率" value={`${summary.savingRate}%`} />
-        <Small label="本月" value={`${summary.monthCount} 筆`} />
-      </div>
+    </section>
+    <div className="actions">
+      <button onClick={()=>setPage('quick')}>＋ 記帳</button>
+      <button className="green" onClick={()=>setEntry('income')}>＋ 收入</button>
+      <button className="purple" onClick={()=>setEntry('saving')}>＋ 儲蓄</button>
     </div>
-    <div className="quick-actions">
-      <button onClick={()=>setPage('quick')} className="qa dark"><PlusCircle size={18}/>記帳</button>
-      <button onClick={()=>setEntryMode('income')} className="qa income"><WalletCards size={18}/>收入</button>
-      <button onClick={()=>setEntryMode('saving')} className="qa saving"><PiggyBank size={18}/>儲蓄</button>
-    </div>
-    <Panel theme={theme}>
-      <Section title="最近常用快捷交易" sub="最多 8 個，可在 Settings 管理" />
-      <div className="quick-key-grid">
-        {keys.map(k => <button key={k.id} className="quick-key" onClick={()=>addTransaction(makeTx('expense',k.amount,k.category,k.emoji,k.payment,todayISO(),k.name))}>
-          <span>{k.emoji}</span><b>{k.name}</b><em>{money.format(k.amount)} · {k.payment}</em>
+    <Panel title="最近常用快捷交易" sub="最多 8 個，可在 Settings 管理">
+      <div className="quickgrid">
+        {keys.filter(k=>k.visible).slice(0,8).map(k=><button key={k.id} onClick={()=>addTx(makeTx('expense',k.amount,k.category,k.emoji,k.payment,todayISO(),k.name))}>
+          <i>{k.emoji}</i><b>{k.name}</b><span>{money.format(k.amount)} · {k.payment}</span>
         </button>)}
       </div>
     </Panel>
-    <Timeline transactions={transactions} setEditor={setEditor} theme={theme}/>
+    <Timeline txs={txs} setEditing={setEditing}/>
   </div>
 }
-
-function QuickAddPage({ theme, payment, setPayment, quickKeys, addTransaction }) {
-  const [amount, setAmount] = useState('0')
-  const [date, setDate] = useState(todayISO())
-  const [custom, setCustom] = useState(false)
-  const press = (v) => {
-    if (v === 'del') return setAmount(a => a.length > 1 ? a.slice(0,-1) : '0')
-    if (v === 'clear') return setAmount('0')
-    if (v === '.' && amount.includes('.')) return
-    setAmount(a => a === '0' && v !== '.' ? v : a + v)
+function QuickPage({payment,setPayment,keys,addTx}) {
+  const [amount,setAmount] = useState('0')
+  const [date,setDate] = useState(todayISO())
+  const [custom,setCustom] = useState(false)
+  const press = v => {
+    if(v==='del') return setAmount(a=>a.length>1?a.slice(0,-1):'0')
+    if(v==='clear') return setAmount('0')
+    if(v==='.' && amount.includes('.')) return
+    setAmount(a=>a==='0'&&v!=='.'?v:a+v)
   }
-  const addExpense = (cat) => {
+  const submit = ([name,emoji]) => {
     const n = Number(amount)
-    if (!n) return
-    addTransaction(makeTx('expense', n, cat.name, cat.emoji, payment, date, ''))
+    if(!n) return
+    addTx(makeTx('expense', n, name, emoji, payment, date, ''))
     setAmount('0')
   }
   return <div className="page">
-    <Header title="Quick Add" subtitle="一屏完成，不用上下拉動。" />
-    <Panel theme={theme}>
-      <div className="quick-layout">
-        <div className="calculator-zone">
-          <div className={`amount-display bg-gradient-to-br ${theme.accent}`}>{money.format(Number(amount || 0))}</div>
-          <DateChooser date={date} setDate={setDate} custom={custom} setCustom={setCustom}/>
-          <div className="pay-scroll">
-            {paymentMethods.map(p => <button key={p} onClick={()=>setPayment(p)} className={payment===p ? 'chip selected' : 'chip'}>{p}</button>)}
-          </div>
-          <div className="keypad">
-            {['1','2','3','4','5','6','7','8','9','.','0','del'].map(k=><button key={k} onClick={()=>press(k)}>{k==='del'?'⌫':k}</button>)}
-          </div>
-          <button className="clear-btn" onClick={()=>press('clear')}>清除</button>
+    <Header title="Quick Add" sub="一屏完成，不需上下拉動。" />
+    <Panel>
+      <div className="quicklayout">
+        <div className="calc">
+          <div className="amount">{money.format(Number(amount||0))}</div>
+          <DatePick date={date} setDate={setDate} custom={custom} setCustom={setCustom}/>
+          <div className="chips">{payments.map(p=><button key={p} onClick={()=>setPayment(p)} className={payment===p?'sel':''}>{p}</button>)}</div>
+          <div className="pad">{['1','2','3','4','5','6','7','8','9','.','0','del'].map(k=><button key={k} onClick={()=>press(k)}>{k==='del'?'⌫':k}</button>)}</div>
+          <button className="clear" onClick={()=>press('clear')}>清除</button>
         </div>
-        <div className="category-zone">
-          {expenseCategories.map(c => <button key={c.name} onClick={()=>addExpense(c)} className="cat-btn">
-            <span>{c.emoji}</span><b>{c.name}</b>
-          </button>)}
-        </div>
+        <div className="catlist">{cats.map(c=><button key={c[0]} onClick={()=>submit(c)}><i>{c[1]}</i><b>{c[0]}</b></button>)}</div>
       </div>
     </Panel>
-    <Panel theme={theme}>
-      <Section title="快捷交易" sub="使用目前選擇日期新增" />
-      <div className="key-strip">
-        {quickKeys.filter(k=>k.visible).slice(0,8).map(k => <button key={k.id} onClick={()=>addTransaction(makeTx('expense',k.amount,k.category,k.emoji,k.payment,date,k.name))}>
-          <span>{k.emoji}</span><b>{k.name}</b><em>{money.format(k.amount)}</em>
-        </button>)}
-      </div>
+    <Panel title="快捷交易">
+      <div className="strip">{keys.filter(k=>k.visible).slice(0,8).map(k=><button key={k.id} onClick={()=>addTx(makeTx('expense',k.amount,k.category,k.emoji,k.payment,date,k.name))}><i>{k.emoji}</i><b>{k.name}</b><span>{money.format(k.amount)}</span></button>)}</div>
     </Panel>
   </div>
 }
-
-function CalendarPage({ transactions, setEditor, theme }) {
-  const [month, setMonth] = useState(new Date())
-  const [selected, setSelected] = useState(null)
-  const days = getCalendarDays(month)
-  const ym = month.toISOString().slice(0,7)
+function CalendarPage({txs,setEditing}) {
+  const [month,setMonth] = useState(new Date())
+  const [selected,setSelected] = useState(null)
+  const days = calendarDays(month)
+  const ym = ymOf(month)
   return <div className="page">
-    <Header title="Calendar" subtitle="只保留日曆，點日期查看交易。" />
-    <Panel theme={theme}>
-      <div className="month-head">
-        <button onClick={()=>setMonth(new Date(month.getFullYear(), month.getMonth()-1, 1))}><ChevronLeft/></button>
-        <h2>{month.getFullYear()} 年 {month.getMonth()+1} 月</h2>
-        <button onClick={()=>setMonth(new Date(month.getFullYear(), month.getMonth()+1, 1))}><ChevronRight/></button>
-      </div>
-      <div className="week-row">{['日','一','二','三','四','五','六'].map(d=><b key={d}>{d}</b>)}</div>
-      <div className="calendar-grid">
-        {days.map(d => {
-          const iso = d.toISOString().slice(0,10)
-          const list = transactions.filter(t=>t.date===iso)
-          const exp = list.filter(t=>t.type==='expense').reduce((a,b)=>a+b.amount,0)
-          const inc = list.filter(t=>t.type==='income').reduce((a,b)=>a+b.amount,0)
-          const sav = list.filter(t=>t.type==='saving').reduce((a,b)=>a+b.amount,0)
-          const inMonth = iso.startsWith(ym)
-          return <button key={iso} onClick={()=>setSelected({iso,list})} className={`day-cell ${!inMonth?'muted':''} ${iso===todayISO()?'today':''}`}>
-            <strong>{d.getDate()}</strong>
-            {exp>0 && <span className="mark red">-{Math.round(exp)}</span>}
-            {inc>0 && <span className="mark green">+{Math.round(inc)}</span>}
-            {sav>0 && <span className="mark blue">🐷 {Math.round(sav)}</span>}
+    <Header title="Calendar" sub="只保留日曆，點日期查看交易。" />
+    <Panel>
+      <div className="monthbar"><button onClick={()=>setMonth(new Date(month.getFullYear(),month.getMonth()-1,1))}>‹</button><b>{month.getFullYear()} 年 {month.getMonth()+1} 月</b><button onClick={()=>setMonth(new Date(month.getFullYear(),month.getMonth()+1,1))}>›</button></div>
+      <div className="week">{['日','一','二','三','四','五','六'].map(d=><b key={d}>{d}</b>)}</div>
+      <div className="calgrid">
+        {days.map(d=>{
+          const iso = isoOf(d)
+          const list = txs.filter(t=>t.date===iso)
+          const exp=sum(list,'expense'), inc=sum(list,'income'), sav=sum(list,'saving')
+          return <button key={iso} onClick={()=>setSelected({iso,list})} className={`${iso.startsWith(ym)?'':'fade'} ${iso===todayISO()?'today':''}`}>
+            <strong>{d.getDate()}</strong>{exp>0&&<em className="red">-{Math.round(exp)}</em>}{inc>0&&<em className="green">+{Math.round(inc)}</em>}{sav>0&&<em className="blue">🐷 {Math.round(sav)}</em>}
           </button>
         })}
       </div>
     </Panel>
-    <AnimatePresence>{selected && <BottomSheet title={`${selected.iso} 交易`} theme={theme} onClose={()=>setSelected(null)}>
-      {selected.list.length ? selected.list.map(t=><button key={t.id} className="row-btn" onClick={()=>{setEditor(t);setSelected(null)}}><span>{t.emoji} {t.note || t.category}</span><b>{money.format(t.amount)}</b></button>) : <Empty text="這天未有交易。" />}
-    </BottomSheet>}</AnimatePresence>
+    {selected && <Sheet title={selected.iso} onClose={()=>setSelected(null)}>
+      {selected.list.length?selected.list.map(t=><button className="row" key={t.id} onClick={()=>{setEditing(t);setSelected(null)}}><span>{t.emoji} {t.note||t.category}</span><b>{money.format(t.amount)}</b></button>):<p className="empty">這天未有交易</p>}
+    </Sheet>}
   </div>
 }
-
-function StatsPage({ transactions, theme }) {
-  const [month, setMonth] = useState(new Date())
-  const ym = `${month.getFullYear()}-${String(month.getMonth()+1).padStart(2,'0')}`
-  const monthLabel = `${month.getFullYear()}年${month.getMonth()+1}月`
-  const monthTx = transactions.filter(t=>t.date && t.date.startsWith(ym))
-  const expenseTx = monthTx.filter(t=>t.type==='expense')
-  const totalExpense = expenseTx.reduce((a,b)=>a+b.amount,0)
-  const catData = aggregate(expenseTx, 'category')
-  const daily = monthDailyExpense(expenseTx, month)
-  const dailyMax = monthDailyMax(expenseTx, month)
-  const monthlyMax = topExpenses(expenseTx, 1)[0]
-  const colors = theme.colors
-
-  const chart = (id, title, sub, body) => <Panel theme={theme} id={`chart-${id}`}>
-    <div className="chart-head">
-      <div><h3>{title}</h3><p>{sub}</p></div>
-      <div><button onClick={()=>downloadElement(`chart-${id}`, `${title}-${ym}.png`)}><Download size={16}/></button><button onClick={()=>shareElement(`chart-${id}`, `${title}-${ym}.png`)}><Share2 size={16}/></button></div>
-    </div>
-    {body}
-  </Panel>
-
+function StatsPage({txs}) {
+  const [month,setMonth] = useState(new Date())
+  const ym = ymOf(month)
+  const label = `${month.getFullYear()}年${month.getMonth()+1}月`
+  const expenses = txs.filter(t=>t.type==='expense' && t.date?.startsWith(ym))
+  const total = expenses.reduce((a,b)=>a+b.amount,0)
+  const cat = aggregate(expenses,'category')
+  const daily = dailyData(expenses, month)
+  const dailyMax = dailyMaxData(expenses, month)
+  const max = [...expenses].sort((a,b)=>b.amount-a.amount)[0]
   return <div className="page">
-    <div className="topline">
-      <Header title="Stats" subtitle="每月累計支出及專業圖卡。" />
-      <button className={`story-btn bg-gradient-to-r ${theme.accent}`} onClick={()=>downloadStory('stats-story', `MoneyFlow-${ym}-IG-Story.png`)}>生成IG圖</button>
-    </div>
-
-    <div className={`month-total bg-gradient-to-br ${theme.accent}`}>
-      <button onClick={()=>setMonth(new Date(month.getFullYear(), month.getMonth()-1, 1))}><ChevronLeft/></button>
-      <div><span>{monthLabel}</span><small>每月累計支出</small><strong>{money.format(totalExpense)}</strong></div>
-      <button onClick={()=>setMonth(new Date(month.getFullYear(), month.getMonth()+1, 1))}><ChevronRight/></button>
-    </div>
-
-    <div id="stats-story" className="story-card">
-      <div className={`story-inner bg-gradient-to-br ${theme.accent}`}>
-        <div className="story-title"><div><span>MoneyFlow Monthly Stats</span><h2>{monthLabel}</h2></div><b>IG Story</b></div>
-        <div className="story-main"><span>每月累計支出</span><strong>{money.format(totalExpense)}</strong></div>
-        <div className="story-panels">
-          <div><span>最大單項消費</span><strong>{monthlyMax ? money.format(monthlyMax.amount) : money.format(0)}</strong><small>{monthlyMax ? `${monthlyMax.emoji} ${monthlyMax.note || monthlyMax.category}` : '未有支出'}</small></div>
-          <div><span>最高消費日</span><strong>{topDay(daily)?.date || '-'}</strong><small>{topDay(daily) ? money.format(topDay(daily).expense) : '未有記錄'}</small></div>
-        </div>
-        <div className="story-bars">
-          <h3>類別開支比例</h3>
-          {catData.slice(0,5).map((d,i)=><div className="story-bar" key={d.name}><span>{d.name}</span><i><em style={{width:`${Math.max(4,totalExpense?d.value/totalExpense*100:0)}%`,background:colors[i%colors.length]}}></em></i><b>{Math.round(totalExpense?d.value/totalExpense*100:0)}%</b></div>)}
-        </div>
-        <footer>清楚記錄每一天的金錢流向</footer>
-      </div>
-    </div>
-
-    {chart('category', '類別開支比例', '顯示類別、百分比及金額',
-      <div className="chart-box">{catData.length ? <ResponsiveContainer><PieChart><Pie data={catData} dataKey="value" nameKey="name" outerRadius={86} labelLine label={({name,percent,value})=>`${name} ${(percent*100).toFixed(0)}% · ${money.format(value)}`}>{catData.map((_,i)=><Cell key={i} fill={colors[i%colors.length]}/>)}</Pie><Tooltip formatter={(v)=>money.format(v)}/></PieChart></ResponsiveContainer> : <Empty text="本月未有支出資料。" />}</div>
-    )}
-
-    {chart('daily', '每日消費變化', '顯示本月每日累計支出',
-      <div className="chart-box"><ResponsiveContainer><LineChart data={daily}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="day"/><YAxis/><Tooltip formatter={(v)=>money.format(v)}/><Line type="monotone" dataKey="expense" stroke={colors[0]} strokeWidth={3} dot={false}/></LineChart></ResponsiveContainer></div>
-    )}
-
-    {chart('dailymax', '每日最大單項消費', '每日更新，找出每天最大一筆支出',
-      <div className="chart-box"><ResponsiveContainer><BarChart data={dailyMax}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="day"/><YAxis/><Tooltip formatter={(v)=>money.format(v)}/><Bar dataKey="max" fill={colors[2]} radius={[12,12,0,0]}/></BarChart></ResponsiveContainer></div>
-    )}
-
-    {chart('monthmax', '每月最大單項消費', '每月更新，配合美化圖片展示',
-      <div>
-        <div className={`max-purchase bg-gradient-to-br ${theme.accent}`}>
-          <div>{monthlyMax?.emoji || '🏆'}</div>
-          <section><span>本月最大單項消費</span><strong>{monthlyMax ? money.format(monthlyMax.amount) : money.format(0)}</strong><p>{monthlyMax ? `${monthlyMax.note || monthlyMax.category} · ${monthlyMax.payment} · ${monthlyMax.date}` : '本月未有支出'}</p></section>
-        </div>
-        <div className="podium">{topExpenses(expenseTx,3).map((t,i)=><article key={t.id}><span>{i===0?'🥇':i===1?'🥈':'🥉'}</span><b>{t.note || t.category}</b><em>{money.format(t.amount)}</em></article>)}</div>
-      </div>
-    )}
+    <div className="topline"><Header title="Stats" sub="每月累計支出及專業圖卡。" /><button className="storybtn" onClick={()=>downloadStory('story',`Pig Pocket-${ym}-IG-Story.png`)}>生成IG圖</button></div>
+    <section className="monthtotal"><button onClick={()=>setMonth(new Date(month.getFullYear(),month.getMonth()-1,1))}>‹</button><div><span>{label}</span><small>每月累計支出</small><strong>{money.format(total)}</strong></div><button onClick={()=>setMonth(new Date(month.getFullYear(),month.getMonth()+1,1))}>›</button></section>
+    <Story id="story" label={label} total={total} cat={cat} daily={daily} max={max}/>
+    <Panel title="類別開支比例" sub="顯示類別、百分比及金額">
+      <PieLike data={cat} total={total}/>
+    </Panel>
+    <Panel title="每日消費變化" sub="顯示本月每日累計支出">
+      <LineLike data={daily} field="expense"/>
+    </Panel>
+    <Panel title="每日最大單項消費" sub="每日更新，找出每天最大一筆支出">
+      <BarLike data={dailyMax} field="max"/>
+    </Panel>
+    <Panel title="每月最大單項消費" sub="每月更新，配合美化圖片展示">
+      <div className="maxcard"><i>{max?.emoji||'🏆'}</i><div><span>本月最大單項消費</span><b>{max?money.format(max.amount):money.format(0)}</b><p>{max?`${max.note||max.category} · ${max.payment} · ${max.date}`:'本月未有支出'}</p></div></div>
+      <div className="podium">{[...expenses].sort((a,b)=>b.amount-a.amount).slice(0,3).map((t,i)=><article key={t.id}><i>{i===0?'🥇':i===1?'🥈':'🥉'}</i><b>{t.note||t.category}</b><span>{money.format(t.amount)}</span></article>)}</div>
+    </Panel>
   </div>
 }
-
-function SettingsPage({ theme, themeId, setThemeId, quickKeys, setQuickKeys, backupFrequency, setBackupFrequency, lastBackupAt, setLastBackupAt, transactions, setTransactions, notify }) {
-  const [draft, setDraft] = useState({emoji:'☕', name:'Coffee', amount:'38', category:'雜項', payment:'八達通', visible:true})
-  const [backups, setBackups] = useState([])
-  const [backupLoading, setBackupLoading] = useState(false)
-  const fileRef = useRef(null)
-  const saveQuickKeys = (nextQuickKeys) => {
-    setQuickKeys(nextQuickKeys)
-  }
-  const addKey = () => {
-    if (!draft.name || !Number(draft.amount)) return
-    saveQuickKeys([...quickKeys, {...draft, id:uid(), amount:Number(draft.amount)}])
-    setDraft({emoji:'☕', name:'Coffee', amount:'38', category:'雜項', payment:'八達通', visible:true})
-    notify('快捷鍵已新增')
-  }
-  const updateKey = (id, patch) => saveQuickKeys(quickKeys.map(k=>k.id===id?{...k,...patch}:k))
-  const deleteKey = (id) => saveQuickKeys(quickKeys.filter(k=>k.id!==id))
-  const move = (i, dir) => {
-    const arr = [...quickKeys]
-    const ni = i + dir
-    if (ni < 0 || ni >= arr.length) return
-    const [x] = arr.splice(i,1)
-    arr.splice(ni,0,x)
-    saveQuickKeys(arr)
-  }
-  const refreshBackups = () => {
-    setBackupLoading(true)
-    listNasBackups()
-      .then(setBackups)
-      .catch(() => notify('NAS 備份列表暫時讀不到'))
-      .finally(() => setBackupLoading(false))
-  }
-  useEffect(() => {
-    refreshBackups()
-  }, [])
-  const runBackup = () => {
-    setBackupLoading(true)
-    createNasBackup(transactions, quickKeys)
-      .then((backup) => {
-        setLastBackupAt(backup?.createdAt || new Date().toISOString())
-        notify('NAS 備份完成')
-        refreshBackups()
-      })
-      .catch(() => notify('NAS 備份暫時失敗'))
-      .finally(() => setBackupLoading(false))
-  }
-  const restoreBackup = (backup) => {
-    if (!confirm(`Restore NAS backup from ${formatBackupDate(backup.createdAt)}? Current local data will be replaced.`)) return
-    setBackupLoading(true)
-    getNasBackup(backup.id)
-      .then((data) => {
-        const nextTransactions = Array.isArray(data.transactions) ? data.transactions : []
-        const nextQuickKeys = Array.isArray(data.quickKeys) ? data.quickKeys : []
-        setTransactions(nextTransactions)
-        setQuickKeys(nextQuickKeys)
-        notify('已還原 NAS 備份')
-      })
-      .catch(() => notify('還原備份失敗'))
-      .finally(() => setBackupLoading(false))
-  }
-  const reset = () => {
-    if(!confirm('確定要重設所有資料嗎？')) return
-    if(!confirm('此操作無法還原，確定刪除？')) return
-    localStorage.clear()
-    location.reload()
-  }
-  const exportCsv = () => {
-    const rows = [['type','amount','category','payment','date','note'], ...transactions.map(t=>[t.type,t.amount,t.category,t.payment,t.date,t.note])]
-    const csv = rows.map(r=>r.map(x=>`"${String(x??'').replaceAll('"','""')}"`).join(',')).join('\n')
-    downloadBlob(csv, 'moneyflow.csv', 'text/csv')
-  }
-  const exportJson = () => downloadBlob(JSON.stringify({transactions,quickKeys}, null, 2), 'moneyflow-backup.json', 'application/json')
+function SettingsPage({theme,setTheme,keys,setKeys,txs,setTxs,notify}) {
+  const [draft,setDraft] = useState({emoji:'☕',name:'Coffee',amount:'38',category:'雜項',payment:'八達通',visible:true})
+  const addKey = () => { if(!draft.name||!Number(draft.amount))return; setKeys([...keys,{...draft,id:uid(),amount:Number(draft.amount)}]); notify('快捷鍵已新增') }
+  const move = (i,d) => { const a=[...keys], ni=i+d; if(ni<0||ni>=a.length)return; const [x]=a.splice(i,1); a.splice(ni,0,x); setKeys(a) }
+  const reset = () => { if(confirm('確定要重設所有資料嗎？')&&confirm('此操作無法還原，確定刪除？')){localStorage.clear(); location.reload()} }
   return <div className="page">
-    <Header title="Settings" subtitle="Theme Studio、快捷鍵與備份。" />
-    <Panel theme={theme}>
-      <Section title="Theme Studio" sub="真正改變配色、卡片、Bottom Nav 及圖表。" />
-      <div className="theme-grid">
-        {Object.entries(themes).map(([id,t])=><button key={id} onClick={()=>setThemeId(id)} className={themeId===id?'theme-tile active':'theme-tile'}><i className={`bg-gradient-to-r ${t.accent}`}></i><b>{t.name}</b><span>{t.desc}</span></button>)}
-      </div>
+    <Header title="Settings" sub="Theme Studio、快捷鍵、備份。" />
+    <Panel title="Theme Studio" sub="每種風格真正改變畫面。">
+      <div className="themegrid">{Object.entries(themeList).map(([id,[name,cls]])=><button key={id} onClick={()=>setTheme(id)} className={theme===id?'on':''}><i className={cls}></i><b>{name}</b></button>)}</div>
     </Panel>
-    <Panel theme={theme}>
-      <Section title="自訂常用快捷鍵" sub="可新增、刪除、排序、開關顯示。" />
-      <div className="key-form">
-        <input value={draft.emoji} onChange={e=>setDraft({...draft,emoji:e.target.value})} placeholder="Emoji"/>
-        <input value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})} placeholder="名稱"/>
-        <input value={draft.amount} onChange={e=>setDraft({...draft,amount:e.target.value})} placeholder="金額"/>
-        <button onClick={addKey}>新增</button>
-      </div>
-      <div className="key-list">
-        {quickKeys.map((k,i)=><div key={k.id} className="key-row"><GripVertical size={16}/><span>{k.emoji} <b>{k.name}</b><small>{money.format(k.amount)} · {k.category} · {k.payment}</small></span><button onClick={()=>updateKey(k.id,{visible:!k.visible})}>{k.visible?'顯示':'隱藏'}</button><button onClick={()=>move(i,-1)}>↑</button><button onClick={()=>move(i,1)}>↓</button><button onClick={()=>deleteKey(k.id)}><Trash2 size={15}/></button></div>)}
-      </div>
+    <Panel title="自訂常用快捷鍵" sub="新增、刪除、排序、開關顯示。">
+      <div className="keyform"><input value={draft.emoji} onChange={e=>setDraft({...draft,emoji:e.target.value})}/><input value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/><input value={draft.amount} onChange={e=>setDraft({...draft,amount:e.target.value})}/><button onClick={addKey}>新增</button></div>
+      <div className="keyrows">{keys.map((k,i)=><div key={k.id}><span>{k.emoji} <b>{k.name}</b><small>{money.format(k.amount)} · {k.category}</small></span><button onClick={()=>setKeys(keys.map(x=>x.id===k.id?{...x,visible:!x.visible}:x))}>{k.visible?'顯示':'隱藏'}</button><button onClick={()=>move(i,-1)}>↑</button><button onClick={()=>move(i,1)}>↓</button><button onClick={()=>setKeys(keys.filter(x=>x.id!==k.id))}>刪</button></div>)}</div>
     </Panel>
-    <Panel theme={theme}>
-      <Section title="NAS Backup" sub="NAS only stores backup snapshots. It will not overwrite local data unless you restore one." />
-      <div className="backup-tools">
-        <label>Backup frequency</label>
-        <select value={backupFrequency} onChange={e=>setBackupFrequency(e.target.value)}>
-          {BACKUP_FREQUENCY_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
-        </select>
-        <small>Last backup: {formatBackupDate(lastBackupAt)}</small>
-        <div className="settings-grid">
-          <button onClick={runBackup} disabled={backupLoading}><Save size={18}/>Backup now</button>
-          <button onClick={refreshBackups} disabled={backupLoading}><Download size={18}/>Refresh list</button>
-        </div>
-      </div>
-      <div className="backup-list">
-        {backups.length ? backups.map(backup => <button key={backup.id} className="backup-row" onClick={()=>restoreBackup(backup)} disabled={backupLoading}>
-          <span><b>{formatBackupDate(backup.createdAt)}</b><small>{backup.transactionCount} records · {backup.quickKeyCount} quick keys</small></span>
-          <em>Restore</em>
-        </button>) : <Empty text={backupLoading ? "Loading backups..." : "No NAS backups yet."}/>} 
-      </div>
-    </Panel>
-    <Panel theme={theme}>
-      <Section title="資料管理" />
-      <div className="settings-grid">
-        <button onClick={exportCsv}><Download size={18}/>匯出 CSV</button>
-        <button onClick={exportJson}><Save size={18}/>匯出 JSON</button>
-        <button onClick={()=>fileRef.current?.click()}><Upload size={18}/>匯入 JSON</button>
-        <button className="danger" onClick={reset}><Trash2 size={18}/>Demo Reset</button>
-      </div>
-      <input ref={fileRef} type="file" hidden accept="application/json" onChange={async e=>{
-        const f=e.target.files?.[0]; if(!f) return
-        const data=JSON.parse(await f.text())
-        const nextTransactions = Array.isArray(data.transactions) ? data.transactions : transactions
-        const nextQuickKeys = Array.isArray(data.quickKeys) ? data.quickKeys : quickKeys
-        setTransactions(nextTransactions)
-        setQuickKeys(nextQuickKeys)
-        notify('已匯入備份')
-      }}/>
+    <Panel title="資料管理">
+      <div className="settingsBtns"><button onClick={()=>downloadBlob(csvOf(txs),'moneyflow.csv','text/csv')}>匯出 CSV</button><button onClick={()=>downloadBlob(JSON.stringify({txs,keys},null,2),'moneyflow.json','application/json')}>匯出 JSON</button><button className="danger" onClick={reset}>Demo Reset</button></div>
     </Panel>
   </div>
 }
 
-function DateChooser({ date, setDate, custom, setCustom }) {
-  return <div className="date-box">
-    <div className="date-tabs">
-      <button className={date===todayISO()&&!custom?'active':''} onClick={()=>{setDate(todayISO());setCustom(false)}}>今天</button>
-      <button className={date===yesterdayISO()&&!custom?'active':''} onClick={()=>{setDate(yesterdayISO());setCustom(false)}}>昨天</button>
-      <button className={custom?'active':''} onClick={()=>setCustom(v=>!v)}>自訂日期</button>
-    </div>
-    {custom && <div className="date-picker"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/><small>已選日期：{date}</small></div>}
-  </div>
+function EntrySheet({mode,payment,setPayment,onClose,onAdd}) {
+  const cats2 = mode==='income'?incomeCats:savingCats
+  const [amount,setAmount]=useState('')
+  const [cat,setCat]=useState(cats2[0])
+  const [date,setDate]=useState(todayISO())
+  const [custom,setCustom]=useState(false)
+  const [note,setNote]=useState('')
+  const save=()=>{ const n=Number(amount); if(!n)return; onAdd(makeTx(mode,n,cat,mode==='income'?'💰':'🐷',payment,date,note)) }
+  return <Sheet title={mode==='income'?'新增收入':'新增儲蓄'} onClose={onClose}>
+    <div className="form"><input className="big" inputMode="decimal" autoFocus value={amount} onChange={e=>setAmount(e.target.value)} placeholder="金額"/><div className="choices">{cats2.map(c=><button key={c} className={cat===c?'sel':''} onClick={()=>setCat(c)}>{c}</button>)}</div><DatePick date={date} setDate={setDate} custom={custom} setCustom={setCustom}/><div className="chips">{payments.map(p=><button key={p} className={payment===p?'sel':''} onClick={()=>setPayment(p)}>{p}</button>)}</div><input value={note} onChange={e=>setNote(e.target.value)} placeholder="備註，可留空"/><button className="save" onClick={save}>儲存</button></div>
+  </Sheet>
+}
+function EditSheet({item,onSave,onDelete,onClose}) {
+  const [d,setD]=useState(item)
+  const [custom,setCustom]=useState(false)
+  return <Sheet title="編輯交易" onClose={onClose}>
+    <div className="form"><input value={d.note||''} onChange={e=>setD({...d,note:e.target.value})}/><input inputMode="decimal" value={d.amount} onChange={e=>setD({...d,amount:Number(e.target.value)})}/><input value={d.category} onChange={e=>setD({...d,category:e.target.value})}/><select value={d.type} onChange={e=>setD({...d,type:e.target.value})}><option value="expense">支出</option><option value="income">收入</option><option value="saving">儲蓄</option></select><DatePick date={d.date} setDate={date=>setD({...d,date})} custom={custom} setCustom={setCustom}/><button className="save" onClick={()=>onSave(d)}>儲存</button><button className="delete" onClick={()=>onDelete(d.id)}>刪除</button></div>
+  </Sheet>
 }
 
-function EntrySheet({ mode, theme, payment, setPayment, onClose, onAdd }) {
-  const isIncome = mode === 'income'
-  const cats = isIncome ? incomeCategories : savingCategories
-  const [amount, setAmount] = useState('')
-  const [category, setCategory] = useState(cats[0])
-  const [date, setDate] = useState(todayISO())
-  const [custom, setCustom] = useState(false)
-  const [note, setNote] = useState('')
-  const save = () => {
-    const n = Number(amount)
-    if (!n) return
-    onAdd(makeTx(mode,n,category,isIncome?'💰':'🐷',payment,date,note))
-  }
-  return <BottomSheet title={isIncome?'新增收入':'新增儲蓄'} theme={theme} onClose={onClose}>
-    <div className="sheet-form">
-      <input className="big-input" inputMode="decimal" autoFocus value={amount} onChange={e=>setAmount(e.target.value)} placeholder="金額"/>
-      <div className="choice-grid">{cats.map(c=><button key={c} className={category===c?'selected':''} onClick={()=>setCategory(c)}>{c}</button>)}</div>
-      <DateChooser date={date} setDate={setDate} custom={custom} setCustom={setCustom}/>
-      <div className="pay-scroll">{paymentMethods.map(p=><button key={p} onClick={()=>setPayment(p)} className={payment===p?'chip selected':'chip'}>{p}</button>)}</div>
-      <input value={note} onChange={e=>setNote(e.target.value)} placeholder="備註，可留空"/>
-      <button className={`save-btn bg-gradient-to-r ${theme.accent}`} onClick={save}>儲存</button>
-    </div>
-  </BottomSheet>
-}
+function Header({title,sub}){return <header><h1>{title}</h1><p>{sub}</p></header>}
+function Panel({title,sub,children}){return <section className="panel">{title&&<div className="section"><h2>{title}</h2>{sub&&<p>{sub}</p>}</div>}{children}</section>}
+function Small({label,value}){return <div><span>{label}</span><b>{value}</b></div>}
+function Timeline({txs,setEditing}){return <Panel title="Timeline" sub="點擊可編輯日期與描述"><div className="timeline">{txs.slice(0,24).map(t=><button className="tx" key={t.id} onClick={()=>setEditing(t)}><i>{t.emoji}</i><span><b>{t.note||t.category}</b><small>{t.date} · {t.payment}</small></span><strong className={t.type==='expense'?'redtxt':'greentxt'}>{t.type==='expense'?'-':'+'}{money.format(t.amount)}</strong></button>)}</div></Panel>}
+function DatePick({date,setDate,custom,setCustom}){return <div className="datepick"><div><button className={date===todayISO()&&!custom?'sel':''} onClick={()=>{setDate(todayISO());setCustom(false)}}>今天</button><button className={date===yesterdayISO()&&!custom?'sel':''} onClick={()=>{setDate(yesterdayISO());setCustom(false)}}>昨天</button><button className={custom?'sel':''} onClick={()=>setCustom(!custom)}>自訂日期</button></div>{custom&&<aside><input type="date" value={date} onChange={e=>setDate(e.target.value)}/><small>已選日期：{date}</small></aside>}</div>}
+function Sheet({title,onClose,children}){return <div className="overlay"><div className="sheet"><div className="sheethead"><h3>{title}</h3><button onClick={onClose}>×</button></div>{children}</div></div>}
+function PieLike({data,total}){return <div className="pieWrap"><svg viewBox="0 0 42 42">{data.length?data.reduce((acc,d,i)=>{const val=total?d.value/total*100:0; const dash=`${val} ${100-val}`; const offset=25-acc.sum; acc.sum+=val; acc.nodes.push(<circle key={d.name} r="15.915" cx="21" cy="21" fill="transparent" stroke={colors[i%colors.length]} strokeWidth="8" strokeDasharray={dash} strokeDashoffset={offset}/>);return acc},{sum:0,nodes:[]}).nodes:<circle r="15.915" cx="21" cy="21" fill="transparent" stroke="#e2e8f0" strokeWidth="8"/>}</svg><div className="legend">{data.map((d,i)=><p key={d.name}><i style={{background:colors[i%colors.length]}}></i><b>{d.name}</b><span>{total?Math.round(d.value/total*100):0}% · {money.format(d.value)}</span></p>)}</div></div>}
+function LineLike({data,field}){const max=Math.max(1,...data.map(d=>d[field])); const pts=data.map((d,i)=>`${(i/(Math.max(1,data.length-1))*100).toFixed(2)},${(100-d[field]/max*86-7).toFixed(2)}`).join(' '); return <div className="svgchart"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={pts} fill="none" stroke="#0284c7" strokeWidth="3" vectorEffect="non-scaling-stroke"/></svg></div>}
+function BarLike({data,field}){const max=Math.max(1,...data.map(d=>d[field])); return <div className="bars">{data.map(d=><i key={d.day} style={{height:`${Math.max(2,d[field]/max*100)}%`}} title={`${d.day}: ${money.format(d[field])}`}></i>)}</div>}
+function Story({id,label,total,cat,daily,max}){const top=topDay(daily);return <div className="story" id={id}><div className="storyin"><h4>Pig Pocket Monthly Stats</h4><h2>{label}</h2><section><span>每月累計支出</span><b>{money.format(total)}</b></section><div className="storygrid"><article><span>最大單項</span><b>{max?money.format(max.amount):money.format(0)}</b><small>{max?max.note||max.category:'未有支出'}</small></article><article><span>最高消費日</span><b>{top?.date||'-'}</b><small>{top?money.format(top.expense):'未有記錄'}</small></article></div><div className="storybars">{cat.slice(0,5).map((d,i)=><p key={d.name}><span>{d.name}</span><i><em style={{width:`${Math.max(5,total?d.value/total*100:0)}%`,background:colors[i%colors.length]}}></em></i><b>{total?Math.round(d.value/total*100):0}%</b></p>)}</div><footer>Powered by Pig Pocket 🐷</footer></div></div>}
+function summary(txs){const ym=todayISO().slice(0,7);const m=txs.filter(t=>t.date?.startsWith(ym));const expense=sum(m,'expense'),income=sum(m,'income'),saving=sum(m,'saving');return{expense,income,saving,balance:income-expense-saving,today:sum(m.filter(t=>t.date===todayISO()),'expense'),rate:income?Math.round(saving/income*100):0,count:m.length}}
+function sum(list,type){return list.filter(t=>t.type===type).reduce((a,b)=>a+b.amount,0)}
+function ymOf(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+function isoOf(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+function calendarDays(month){const first=new Date(month.getFullYear(),month.getMonth(),1);const start=new Date(first);start.setDate(first.getDate()-first.getDay());return Array.from({length:42},(_,i)=>{const d=new Date(start);d.setDate(start.getDate()+i);return d})}
+function aggregate(list,key){const m={};list.forEach(t=>m[t[key]||'其他']=(m[t[key]||'其他']||0)+t.amount);return Object.entries(m).map(([name,value])=>({name,value})).filter(d=>d.value>0)}
+function dailyData(list,month){const n=new Date(month.getFullYear(),month.getMonth()+1,0).getDate();return Array.from({length:n},(_,i)=>{const day=i+1,date=`${ymOf(month)}-${String(day).padStart(2,'0')}`;return{day,date,expense:list.filter(t=>t.date===date).reduce((a,b)=>a+b.amount,0)}})}
+function dailyMaxData(list,month){const n=new Date(month.getFullYear(),month.getMonth()+1,0).getDate();return Array.from({length:n},(_,i)=>{const day=i+1,date=`${ymOf(month)}-${String(day).padStart(2,'0')}`;const a=list.filter(t=>t.date===date).map(t=>t.amount);return{day,date,max:a.length?Math.max(...a):0}})}
+function topDay(d){return [...d].sort((a,b)=>b.expense-a.expense)[0]}
+async function downloadStory(id,filename){const el=document.getElementById(id);if(!el)return;const c=await html2canvas(el,{backgroundColor:null,scale:3,width:360,height:640});const out=document.createElement('canvas');out.width=1080;out.height=1920;out.getContext('2d').drawImage(c,0,0,1080,1920);out.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=filename;a.click()},'image/png')}
+function csvOf(txs){return [['type','amount','category','payment','date','note'],...txs.map(t=>[t.type,t.amount,t.category,t.payment,t.date,t.note])].map(r=>r.map(x=>`"${String(x||'').replaceAll('"','""')}"`).join(',')).join('\n')}
+function downloadBlob(text,filename,type){const b=new Blob([text],{type});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=filename;a.click()}
 
-function EditSheet({ item, theme, onClose, onSave, onDelete }) {
-  const [draft, setDraft] = useState(item)
-  const [custom, setCustom] = useState(false)
-  return <BottomSheet title="編輯交易" theme={theme} onClose={onClose}>
-    <div className="sheet-form">
-      <input value={draft.note || ''} onChange={e=>setDraft({...draft,note:e.target.value})} placeholder="描述"/>
-      <input inputMode="decimal" value={draft.amount} onChange={e=>setDraft({...draft,amount:Number(e.target.value)})}/>
-      <input value={draft.category} onChange={e=>setDraft({...draft,category:e.target.value})}/>
-      <select value={draft.type} onChange={e=>setDraft({...draft,type:e.target.value})}><option value="expense">支出</option><option value="income">收入</option><option value="saving">儲蓄</option></select>
-      <DateChooser date={draft.date} setDate={(date)=>setDraft({...draft,date})} custom={custom} setCustom={setCustom}/>
-      <div className="pay-scroll">{paymentMethods.map(p=><button key={p} onClick={()=>setDraft({...draft,payment:p})} className={draft.payment===p?'chip selected':'chip'}>{p}</button>)}</div>
-      <button className={`save-btn bg-gradient-to-r ${theme.accent}`} onClick={()=>onSave(draft)}>儲存</button>
-      <button className="delete-btn" onClick={()=>onDelete(draft.id)}>刪除</button>
-    </div>
-  </BottomSheet>
-}
-
-function Timeline({ transactions, setEditor, theme }) {
-  return <Panel theme={theme}><Section title="Timeline" sub="點擊可修改日期、描述及支付方式" />
-    <div className="timeline">
-      {transactions.length ? transactions.slice(0,22).map(t=><button className="tx-row" key={t.id} onClick={()=>setEditor(t)}><span>{t.emoji}</span><div><b>{t.note || t.category}</b><small>{t.date} · {t.payment} · {labelType(t.type)}</small></div><strong className={t.type==='expense'?'out':'in'}>{t.type==='expense'?'-':'+'}{money.format(t.amount)}</strong></button>) : <Empty text="未有交易。"/>}
-    </div>
-  </Panel>
-}
-
-function Panel({ theme, children, id }) { return <section id={id} className={`panel ${theme.card}`}>{children}</section> }
-function Header({ title, subtitle }) { return <header className="header"><h1>{title}</h1><p>{subtitle}</p></header> }
-function Section({ title, sub }) { return <div className="section-title"><h2>{title}</h2>{sub && <p>{sub}</p>}</div> }
-function Small({ label, value }) { return <div><span>{label}</span><b>{value}</b></div> }
-function Empty({ text }) { return <div className="empty">☁️<br/>{text}</div> }
-function Toast({ text }) { return <motion.div className="toast" initial={{opacity:0,y:20}} animate={{opacity:1,y:0}} exit={{opacity:0,y:20}}><CheckCircle2 size={18}/>{text}</motion.div> }
-function BottomSheet({ title, theme, onClose, children }) { return <motion.div className="sheet-wrap" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.div className={`sheet ${theme.card}`} initial={{y:250}} animate={{y:0}} exit={{y:250}} transition={{type:'spring',damping:24,stiffness:260}}><div className="sheet-head"><h3>{title}</h3><button onClick={onClose}><X/></button></div>{children}</motion.div></motion.div> }
-function BottomNav({ page, setPage, theme }) {
-  const items = [['home',Home,'Home'],['quick',PlusCircle,'Quick'],['calendar',CalendarDays,'Calendar'],['stats',BarChart3,'Stats'],['settings',Settings,'Settings']]
-  return <nav className={`bottom-nav ${theme.card}`}>{items.map(([id,Icon,label])=><button key={id} onClick={()=>setPage(id)} className={page===id?'active':''}><Icon size={19}/><span>{label}</span></button>)}</nav>
-}
-
-function labelType(type) { return type==='income'?'收入':type==='saving'?'儲蓄':'支出' }
-function getSummary(transactions) {
-  const ym = todayISO().slice(0,7)
-  const month = transactions.filter(t=>t.date?.startsWith(ym))
-  const sum = (type) => month.filter(t=>t.type===type).reduce((a,b)=>a+b.amount,0)
-  const expense=sum('expense'), income=sum('income'), saving=sum('saving')
-  return { expense, income, saving, balance: income-expense-saving, todayExpense: month.filter(t=>t.date===todayISO()&&t.type==='expense').reduce((a,b)=>a+b.amount,0), savingRate: income?Math.round(saving/income*100):0, monthCount: month.length }
-}
-function getCalendarDays(month) {
-  const first = new Date(month.getFullYear(), month.getMonth(), 1)
-  const start = new Date(first)
-  start.setDate(first.getDate() - first.getDay())
-  return Array.from({length:42}, (_,i)=>{ const d = new Date(start); d.setDate(start.getDate()+i); return d })
-}
-function aggregate(list, key) {
-  const map = {}
-  list.forEach(t => map[t[key] || '其他'] = (map[t[key] || '其他'] || 0) + Number(t.amount||0))
-  return Object.entries(map).map(([name,value])=>({name,value})).filter(x=>x.value>0)
-}
-function monthDailyExpense(list, month) {
-  const y=month.getFullYear(), m=month.getMonth(), n=new Date(y,m+1,0).getDate()
-  return Array.from({length:n},(_,i)=>{ const day=i+1; const iso=`${y}-${String(m+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`; return {day, date:iso, expense:list.filter(t=>t.date===iso).reduce((a,b)=>a+b.amount,0)} })
-}
-function monthDailyMax(list, month) {
-  const y=month.getFullYear(), m=month.getMonth(), n=new Date(y,m+1,0).getDate()
-  return Array.from({length:n},(_,i)=>{ const day=i+1; const iso=`${y}-${String(m+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`; const daily=list.filter(t=>t.date===iso); return {day, date:iso, max:daily.length?Math.max(...daily.map(t=>t.amount)):0} })
-}
-function topExpenses(list, n=3) { return [...list].sort((a,b)=>b.amount-a.amount).slice(0,n) }
-function topDay(daily) { return [...daily].sort((a,b)=>b.expense-a.expense)[0] }
-async function downloadElement(id, filename) {
-  const el = document.getElementById(id); if(!el) return
-  const canvas = await html2canvas(el, { backgroundColor:null, scale:2 })
-  const a=document.createElement('a'); a.href=canvas.toDataURL('image/png'); a.download=filename; a.click()
-}
-async function shareElement(id, filename) {
-  const el = document.getElementById(id); if(!el) return
-  const canvas = await html2canvas(el, { backgroundColor:null, scale:2 })
-  canvas.toBlob(async blob => {
-    const file = new File([blob], filename, { type:'image/png' })
-    if (navigator.canShare?.({files:[file]})) await navigator.share({title:'MoneyFlow', text:'MoneyFlow 圖卡', files:[file]})
-    else { const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click(); alert('已下載圖片，可手動分享到 IG / WhatsApp。') }
-  })
-}
-async function downloadStory(id, filename) {
-  const el = document.getElementById(id); if(!el) return
-  const canvas = await html2canvas(el, { backgroundColor:null, scale:3, width:360, height:640 })
-  const out = document.createElement('canvas'); out.width=1080; out.height=1920
-  out.getContext('2d').drawImage(canvas,0,0,1080,1920)
-  out.toBlob(blob => { const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click() }, 'image/png')
-}
-function downloadBlob(text, filename, type) { const b=new Blob([text],{type}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=filename; a.click() }
-
-createRoot(document.getElementById('root')).render(<App />)
+createRoot(document.getElementById('root')).render(<App/>)

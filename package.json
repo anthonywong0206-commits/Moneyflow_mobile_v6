@@ -1,6 +1,6 @@
 {
-  "name": "moneyflow-v7-1-fixed",
-  "version": "7.1.0",
+  "name": "pig-pocket",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,9 +16,6 @@
     "vite": "5.4.11",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "framer-motion": "11.11.17",
-    "lucide-react": "0.468.0",
-    "recharts": "2.13.3",
     "html2canvas": "1.4.1"
   },
   "devDependencies": {

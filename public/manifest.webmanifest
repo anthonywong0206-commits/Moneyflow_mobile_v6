@@ -1,13 +1,13 @@
 {
-  "name": "MoneyFlow",
-  "short_name": "MoneyFlow",
-  "start_url": "/",
+  "name": "Pig Pocket",
+  "short_name": "Pig Pocket",
+  "start_url": ".",
   "display": "standalone",
-  "background_color": "#f8fafc",
-  "theme_color": "#f8fafc",
+  "background_color": "#fff1f5",
+  "theme_color": "#ff6f91",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "./icon.svg",
       "sizes": "512x512",
       "type": "image/svg+xml"
     }
